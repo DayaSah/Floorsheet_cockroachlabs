@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import random
+import traceback
 import requests
 import psycopg2
 from psycopg2.extras import execute_values
@@ -41,10 +42,24 @@ def get_robust_session():
     session.mount("https://", HTTPAdapter(max_retries=retries))
     return session
 
+def parse_date_robustly(date_str):
+    """Parses date strings like '2026-8-1' or '2026-08-01' cleanly into date objects."""
+    date_str = date_str.strip()
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d", "%Y-%n-%d", "%Y-%m-%d"):
+        try:
+            # Split and pad parts to ensure YYYY-MM-DD
+            parts = date_str.split('-')
+            if len(parts) == 3:
+                year, month, day = parts
+                return datetime(int(year), int(month), int(day)).date()
+        except ValueError:
+            continue
+    raise ValueError(f"Invalid date format: '{date_str}'. Expected YYYY-MM-DD or YYYY-M-D.")
+
 def generate_date_range(start_str, end_str):
-    """Generates list of YYYY-MM-DD date strings from start to end inclusive."""
-    start = datetime.strptime(start_str, "%Y-%m-%d").date()
-    end = datetime.strptime(end_str, "%Y-%m-%d").date()
+    """Generates list of normalized YYYY-MM-DD date strings."""
+    start = parse_date_robustly(start_str)
+    end = parse_date_robustly(end_str)
     date_list = []
     curr = start
     while curr <= end:
@@ -61,6 +76,12 @@ def parse_symbols(raw_input):
 def main():
     start_time = time.time()
     
+    # 0. Pre-flight Check for DB_URI
+    if not DB_URI:
+        print("❌ FATAL ERROR: DB_URI environment variable is missing or empty!")
+        print("👉 Make sure DB_URI is added in GitHub Repo Settings > Secrets and variables > Actions")
+        sys.exit(1)
+
     # 1. Parse Inputs from Environment Variables
     start_date = os.getenv("INPUT_START_DATE", "").strip()
     end_date = os.getenv("INPUT_END_DATE", "").strip()
@@ -70,11 +91,16 @@ def main():
         print("❌ Error: Both start_date and end_date are required.")
         sys.exit(1)
 
-    target_dates = generate_date_range(start_date, end_date)
+    try:
+        target_dates = generate_date_range(start_date, end_date)
+    except Exception as date_err:
+        print(f"❌ Date Parsing Error: {date_err}")
+        sys.exit(1)
+
     target_symbols = parse_symbols(raw_symbols)
     
     print(f"🚀 Starting Backfill Engine")
-    print(f"📅 Date Range: {start_date} to {end_date} ({len(target_dates)} days)")
+    print(f"📅 Date Range: {target_dates[0]} to {target_dates[-1]} ({len(target_dates)} days)")
     print(f"📈 Target Tickers: {target_symbols if target_symbols != [None] else 'ALL MARKET DATA'}\n")
 
     url = "https://sharehubnepal.com/live/api/v2/floorsheet"
@@ -86,7 +112,6 @@ def main():
 
     session = get_robust_session()
     
-    # Tracking variables for Master Telegram Summary
     total_records_inserted = 0
     total_tasks_completed = 0
     total_tasks_skipped = 0
@@ -183,7 +208,7 @@ def main():
                         break
 
                     page += 1
-                    time.sleep(random.uniform(0.5, 2.0)) # Polite inter-request delay
+                    time.sleep(random.uniform(0.5, 2.0))
 
                 total_records_inserted += date_inserted_count
                 total_tasks_completed += 1
@@ -192,11 +217,11 @@ def main():
         cursor.close()
         conn.close()
 
-        # Step E: Construct Master Telegram Summary
+        # Step E: Master Telegram Summary
         elapsed_mins = round((time.time() - start_time) / 60, 2)
         summary_msg = (
             f"🛠️ <b>NEPSE Floorsheet Backfill Complete</b>\n\n"
-            f"<b>Date Range:</b> {start_date} to {end_date}\n"
+            f"<b>Date Range:</b> {target_dates[0]} to {target_dates[-1]}\n"
             f"<b>Symbols:</b> {raw_symbols if raw_symbols else 'ALL MARKET DATA'}\n"
             f"<b>Tasks Scraped:</b> {total_tasks_completed:,}\n"
             f"<b>Tasks Skipped:</b> {total_tasks_skipped:,} (Holidays / Fully Saved)\n"
@@ -206,6 +231,9 @@ def main():
         send_telegram(summary_msg)
 
     except Exception as e:
+        print(f"\n❌ EXCEPTION CAUGHT IN MAIN EXECUTION:")
+        traceback.print_exc() # Prints exact line number and error traceback to GitHub logs
+        
         fail_msg = (
             f"❌ <b>NEPSE Backfill Engine Failed</b>\n"
             f"<b>Error:</b> <code>{str(e)[:500]}</code>"
