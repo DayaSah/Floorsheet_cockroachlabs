@@ -8,6 +8,29 @@ from dotenv import load_dotenv
 load_dotenv()
 
 DB_URI = os.getenv("DB_URI")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
+def send_telegram(message):
+    """Sends HTML formatted verification report to Telegram."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ Telegram credentials not configured. Report printed to console.")
+        return
+    
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message,
+        "parse_mode": "HTML"
+    }
+    try:
+        res = requests.post(url, json=payload, timeout=15)
+        if res.status_code == 200:
+            print("✅ Telegram notification sent successfully.")
+        else:
+            print(f"⚠️ Telegram API response: {res.status_code} - {res.text}")
+    except Exception as e:
+        print(f"❌ Telegram alert failed: {e}")
 
 def build_db_uri(uri):
     if uri and "sslmode=verify-full" in uri:
@@ -36,7 +59,7 @@ def fetch_nepsealpha_summary(symbol=None):
     data = r.json()
     return data
 
-def verify_today_data(symbol=None, sample_pages=1):
+def verify_today_data(symbol=None, sample_pages=5):
     print("=" * 65)
     print("🔍 NEPSE FLOORSHEET INDEPENDENT VERIFIER (NepseAlpha vs DBMS)")
     print("=" * 65)
@@ -50,7 +73,8 @@ def verify_today_data(symbol=None, sample_pages=1):
     cursor = conn.cursor()
     
     # 1. Fetch NepseAlpha reference
-    print(f"\n📡 Querying NepseAlpha Live Feed [Symbol: {symbol or 'ALL MARKET'}]...")
+    target_label = symbol.upper() if symbol else "ALL MARKET"
+    print(f"\n📡 Querying NepseAlpha Live Feed [Symbol: {target_label}]...")
     alpha_data = fetch_nepsealpha_summary(symbol)
     alpha_summary = alpha_data.get("summary", {})
     as_of = alpha_data.get("asOf", "Today")
@@ -64,7 +88,7 @@ def verify_today_data(symbol=None, sample_pages=1):
     
     # 2. Query CockroachDB
     trade_date = as_of.split()[0] if as_of else None
-    print(f"\n💾 Querying CockroachDB for Date [{trade_date}] [Symbol: {symbol or 'ALL'}]...")
+    print(f"\n💾 Querying CockroachDB for Date [{trade_date}] [Symbol: {target_label}]...")
     
     if symbol:
         cursor.execute("""
@@ -166,25 +190,56 @@ def verify_today_data(symbol=None, sample_pages=1):
                 print(f"     Alpha: sym={r['smb']}, buyer={r['bb']}, seller={r['sb']}, qty={r['qnt']}, rate={r['rt']}, amt={r['am']}")
                 print(f"     DBMS : sym={db_row[1]}, buyer={db_row[2]}, seller={db_row[3]}, qty={db_row[4]}, rate={db_row[5]}, amt={db_row[6]}")
                 
+    match_pct = (matched_contracts / total_verified * 100.0) if total_verified > 0 else 0.0
     print(f"  • Contracts Examined : {total_verified:,}")
-    print(f"  • Perfectly Matched  : {matched_contracts:,} ({matched_contracts/total_verified*100:.1f}%)" if total_verified > 0 else "0")
+    print(f"  • Perfectly Matched  : {matched_contracts:,} ({match_pct:.2f}%)")
     print(f"  • Missing from DBMS  : {missing_in_db:,}")
     print(f"  • Attribute Mismatches: {mismatched_contracts:,}")
+    
+    # Calculate Overall Accuracy Level
+    if alpha_total_trades > 0:
+        coverage_pct = min(100.0, (db_count / alpha_total_trades) * 100.0)
+    else:
+        coverage_pct = 100.0
+    overall_accuracy = (coverage_pct * 0.5) + (match_pct * 0.5)
     
     cursor.close()
     conn.close()
     
     print("\n" + "=" * 65)
-    if missing_in_db == 0 and mismatched_contracts == 0 and trades_diff == 0:
-        print("🎉 STATUS: 100% PERFECT DATA INTEGRITY & SYNCHRONIZATION!")
+    is_perfect = (missing_in_db == 0 and mismatched_contracts == 0 and trades_diff == 0)
+    if is_perfect:
+        status_text = "🎉 100% PERFECT DATA INTEGRITY & SYNCHRONIZATION"
+        status_badge = "✅ <b>PASSED (100% Integrity)</b>"
     else:
-        print("ℹ️ STATUS: PARTIAL / IN PROGRESS — Sync or backfill recommended.")
+        status_text = f"ℹ️ PARTIAL SYNC ({overall_accuracy:.2f}% Accuracy)"
+        status_badge = f"⚠️ <b>ATTENTION NEEDED ({overall_accuracy:.2f}%)</b>"
+    print(status_text)
     print("=" * 65)
+
+    # 5. Format & Send Telegram Audit Report
+    tg_message = (
+        f"📊 <b>NEPSE Floorsheet Audit & Accuracy Report</b>\n\n"
+        f"<b>Status:</b> {status_badge}\n"
+        f"<b>Target:</b> <code>{target_label}</code>\n"
+        f"<b>Reference Date:</b> {trade_date}\n\n"
+        f"<b>🎯 Accuracy Level:</b> <code>{overall_accuracy:.2f}%</code>\n"
+        f"<b>• Trade Count:</b> {db_count:,} / {alpha_total_trades:,} ({coverage_pct:.1f}%)\n"
+        f"<b>• Total Volume:</b> {db_qty:,} vs {alpha_total_qty:,}\n"
+        f"<b>• Total Turnover:</b> Rs {db_amount:,.2f} vs Rs {alpha_total_amount:,.2f}\n\n"
+        f"<b>🔬 Sampled Validation:</b>\n"
+        f"• Contracts Sampled: {total_verified:,}\n"
+        f"• Attribute Match Rate: <b>{match_pct:.2f}%</b>\n"
+        f"• Missing Contracts: {missing_in_db:,}\n"
+        f"• Mismatches: {mismatched_contracts:,}\n\n"
+        f"<i>Verified automatically via NepseAlpha Feed</i>"
+    )
+    send_telegram(tg_message)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Verify CockroachDB floorsheet data against NepseAlpha live feed.")
     parser.add_argument("--symbol", type=str, default=None, help="Stock symbol to verify (e.g. SHIVM, NABIL)")
-    parser.add_argument("--pages", type=int, default=2, help="Number of 500-item pages to sample for micro verification")
+    parser.add_argument("--pages", type=int, default=5, help="Number of 500-item pages to sample for micro verification")
     args = parser.parse_args()
     
     verify_today_data(symbol=args.symbol, sample_pages=args.pages)
