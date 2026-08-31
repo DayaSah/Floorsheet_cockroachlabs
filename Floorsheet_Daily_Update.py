@@ -35,12 +35,21 @@ def get_robust_session():
     session.mount("https://", HTTPAdapter(max_retries=retries))
     return session
 
+def build_db_uri(uri):
+    """Ensure SSL mode is compatible with CockroachDB in all environments."""
+    if uri and "sslmode=verify-full" in uri:
+        uri = uri.replace("sslmode=verify-full", "sslmode=require")
+    return uri
+
 def main():
     start_time = time.time()
     
     # 1. Enforce Nepal Timezone (NPT) regardless of runner location
     nepal_tz = zoneinfo.ZoneInfo("Asia/Kathmandu")
     today_date = datetime.now(nepal_tz).strftime("%Y-%m-%d")
+    
+    print(f"🚀 Starting NEPSE Daily Floorsheet Scraper")
+    print(f"📅 Date: {today_date}")
     
     url = "https://sharehubnepal.com/live/api/v2/floorsheet"
     headers = {
@@ -52,8 +61,8 @@ def main():
     session = get_robust_session()
     
     try:
-        # 2. Probe Request with standard lowerCamelCase params
-        probe_params = {"size": 100, "pageSize": 100, "currentPage": 1, "page": 1, "date": today_date}
+        # 2. Probe Request — ShareHub requires 'page' and 'size'
+        probe_params = {"size": 100, "page": 1, "date": today_date}
         probe_response = session.get(url, params=probe_params, headers=headers, timeout=15)
         probe_response.raise_for_status()
         
@@ -61,24 +70,26 @@ def main():
         total_items = probe_data.get("totalItems", 0)
         total_pages = probe_data.get("totalPages", 1)
         
+        print(f"📊 API reports: {total_items:,} total trades across {total_pages:,} pages")
+        
         if total_items == 0 or not probe_data.get("content"):
-            send_telegram(f"ℹ️ <b>NEPSE Market Closed</b>\nDate: {today_date}\nStatus: 0 records found.")
+            msg = f"ℹ️ <b>NEPSE Market Closed</b>\nDate: {today_date}\nStatus: 0 records found."
+            print(msg)
+            send_telegram(msg)
             sys.exit(0)
 
-        conn = psycopg2.connect(DB_URI)
+        db_uri = build_db_uri(DB_URI)
+        conn = psycopg2.connect(db_uri)
         cursor = conn.cursor()
 
         page = 1
-        page_size = 100  # Request max allowed page size
+        page_size = 100
         total_inserted = 0
         empty_retries = 0
 
         while page <= total_pages:
-            # Pass both standard variations of page/size params for API compatibility
             params = {
                 "size": page_size,
-                "pageSize": page_size,
-                "currentPage": page,
                 "page": page,
                 "date": today_date
             }
@@ -138,8 +149,11 @@ def main():
                 conn.commit()
                 total_inserted += len(batch_data)
 
+            if page % 50 == 0 or page == total_pages:
+                print(f"  ✅ Progress: page {page}/{total_pages} | Records inserted: {total_inserted:,}")
+
             page += 1
-            time.sleep(random.uniform(0.2, 0.6))
+            time.sleep(random.uniform(0.15, 0.35))
 
         cursor.close()
         conn.close()
@@ -153,6 +167,7 @@ def main():
             f"<b>Pages Processed:</b> {page - 1:,} / {total_pages:,}\n"
             f"<b>Execution Time:</b> {elapsed_minutes} mins"
         )
+        print(success_msg)
         send_telegram(success_msg)
 
     except Exception as e:
@@ -161,6 +176,7 @@ def main():
             f"<b>Date:</b> {today_date}\n"
             f"<b>Error:</b> <code>{str(e)[:500]}</code>"
         )
+        print(fail_msg)
         send_telegram(fail_msg)
         sys.exit(1)
 

@@ -42,19 +42,23 @@ def get_robust_session():
     session.mount("https://", HTTPAdapter(max_retries=retries))
     return session
 
+def build_db_uri(uri):
+    """Ensure SSL mode is compatible with CockroachDB in CI/local environments."""
+    if uri and "sslmode=verify-full" in uri:
+        uri = uri.replace("sslmode=verify-full", "sslmode=require")
+    return uri
+
 def parse_date_robustly(date_str):
-    """Parses date strings like '2026-8-1' or '2026-08-01' cleanly into date objects."""
-    date_str = date_str.strip()
-    for fmt in ("%Y-%m-%d", "%Y-%m-%d", "%Y-%n-%d", "%Y-%m-%d"):
-        try:
-            # Split and pad parts to ensure YYYY-MM-DD
-            parts = date_str.split('-')
-            if len(parts) == 3:
-                year, month, day = parts
-                return datetime(int(year), int(month), int(day)).date()
-        except ValueError:
-            continue
-    raise ValueError(f"Invalid date format: '{date_str}'. Expected YYYY-MM-DD or YYYY-M-D.")
+    """Parses date strings like '2026-8-1', '2026/8/26', or '2026-08-01' into date objects."""
+    date_str = date_str.strip().replace('/', '-')
+    try:
+        parts = date_str.split('-')
+        if len(parts) == 3:
+            year, month, day = parts
+            return datetime(int(year), int(month), int(day)).date()
+    except ValueError:
+        pass
+    raise ValueError(f"Invalid date format: '{date_str}'. Expected YYYY-MM-DD or YYYY/MM/DD.")
 
 def generate_date_range(start_str, end_str):
     """Generates list of normalized YYYY-MM-DD date strings."""
@@ -117,7 +121,8 @@ def main():
     total_tasks_skipped = 0
     
     try:
-        conn = psycopg2.connect(DB_URI)
+        db_uri = build_db_uri(DB_URI)
+        conn = psycopg2.connect(db_uri)
         cursor = conn.cursor()
 
         for current_date in target_dates:
@@ -138,9 +143,9 @@ def main():
                 db_count = cursor.fetchone()[0]
 
                 # Step B: Probe Page 1 from API to get totalItems
-                probe_params = {"Size": 100, "currentPage": 1, "date": current_date}
+                probe_params = {"size": 100, "page": 1, "date": current_date}
                 if symbol:
-                    probe_params["Symbol"] = symbol
+                    probe_params["symbol"] = symbol
                 
                 response = session.get(url, params=probe_params, headers=headers, timeout=15)
                 if response.status_code != 200:
@@ -169,10 +174,10 @@ def main():
                 page_size = 100
                 date_inserted_count = 0
 
-                while True:
-                    params = {"Size": page_size, "currentPage": page, "date": current_date}
+                while page <= total_pages:
+                    params = {"size": page_size, "page": page, "date": current_date}
                     if symbol:
-                        params["Symbol"] = symbol
+                        params["symbol"] = symbol
 
                     res = session.get(url, params=params, headers=headers, timeout=15)
                     res.raise_for_status()
@@ -183,32 +188,44 @@ def main():
                     if not records:
                         break
 
-                    batch_data = [
-                        (
-                            int(r["contractId"]), r["symbol"], int(r["buyerMemberId"]),
-                            int(r["sellerMemberId"]), int(r["contractQuantity"]),
-                            float(r["contractRate"]), float(r["contractAmount"]), r["tradeTime"]
-                        )
-                        for r in records
-                    ]
+                    batch_data = []
+                    for r in records:
+                        try:
+                            contract_id = int(r["contractId"])
+                            if contract_id <= 0:
+                                continue
+                            batch_data.append((
+                                contract_id,
+                                str(r["symbol"]).strip().upper(),
+                                int(r["buyerMemberId"]),
+                                int(r["sellerMemberId"]),
+                                int(r["contractQuantity"]),
+                                float(r["contractRate"]),
+                                float(r["contractAmount"]),
+                                r["tradeTime"]
+                            ))
+                        except (KeyError, ValueError, TypeError):
+                            continue
 
-                    insert_query = """
-                    INSERT INTO floorsheet_raw 
-                    (contract_id, symbol, buyer_broker, seller_broker, quantity, rate, amount, trade_time)
-                    VALUES %s
-                    ON CONFLICT (contract_id) DO NOTHING;
-                    """
+                    if batch_data:
+                        insert_query = """
+                        INSERT INTO floorsheet_raw 
+                        (contract_id, symbol, buyer_broker, seller_broker, quantity, rate, amount, trade_time)
+                        VALUES %s
+                        ON CONFLICT (contract_id) DO UPDATE SET
+                            symbol = EXCLUDED.symbol,
+                            rate = EXCLUDED.rate,
+                            amount = EXCLUDED.amount;
+                        """
+                        execute_values(cursor, insert_query, batch_data)
+                        conn.commit()
+                        date_inserted_count += len(batch_data)
 
-                    execute_values(cursor, insert_query, batch_data)
-                    conn.commit()
-
-                    date_inserted_count += len(batch_data)
-
-                    if page >= total_pages or len(records) < page_size:
+                    if len(records) < page_size:
                         break
 
                     page += 1
-                    time.sleep(random.uniform(0.5, 2.0))
+                    time.sleep(random.uniform(0.15, 0.35))
 
                 total_records_inserted += date_inserted_count
                 total_tasks_completed += 1
@@ -228,11 +245,12 @@ def main():
             f"<b>New Records Stored:</b> {total_records_inserted:,}\n"
             f"<b>Total Execution Time:</b> {elapsed_mins} mins"
         )
+        print(summary_msg)
         send_telegram(summary_msg)
 
     except Exception as e:
         print(f"\n❌ EXCEPTION CAUGHT IN MAIN EXECUTION:")
-        traceback.print_exc() # Prints exact line number and error traceback to GitHub logs
+        traceback.print_exc()
         
         fail_msg = (
             f"❌ <b>NEPSE Backfill Engine Failed</b>\n"
