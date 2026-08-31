@@ -69,7 +69,7 @@ def main():
         cursor = conn.cursor()
 
         page = 1
-        page_size = 500  # Request max allowed page size
+        page_size = 100  # Request max allowed page size
         total_inserted = 0
         empty_retries = 0
 
