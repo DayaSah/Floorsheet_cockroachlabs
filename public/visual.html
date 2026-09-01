@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NEPSE Broker Visual Analytics & Intelligence</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+  <!-- Top Bar / Header -->
+  <header class="navbar">
+    <div class="logo-group">
+      <div class="status-dot"></div>
+      <span class="brand-title">NEPSE <span class="highlight">FLOORSHEET</span></span>
+      <span class="badge">BROKER INTELLIGENCE</span>
+    </div>
+    <nav class="nav-tabs">
+      <a href="index.html" class="nav-tab">📄 Raw Floorsheet</a>
+      <a href="visual.html" class="nav-tab active">📈 Broker Visual Analytics</a>
+    </nav>
+    <div class="header-actions">
+      <button id="exportCsvBtn" class="btn btn-outline">📥 Export Matrix CSV</button>
+    </div>
+  </header>
+
+  <main class="container">
+    
+    <!-- Filter Control Panel -->
+    <section class="card filter-card">
+      <div class="filter-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
+        <div class="input-group">
+          <label for="filterDate">Trading Date</label>
+          <input type="date" id="filterDate">
+        </div>
+
+        <div class="input-group" style="grid-column: span 2;">
+          <label>Intraday Session Presets</label>
+          <div class="time-chips">
+            <button class="chip active" data-start="00:00:00" data-end="23:59:59">Full Session (All Day)</button>
+            <button class="chip" data-start="11:00:00" data-end="12:00:00">Opening (11-12)</button>
+            <button class="chip" data-start="12:00:00" data-end="14:00:00">Mid-Day (12-14)</button>
+            <button class="chip" data-start="14:00:00" data-end="15:00:00">Closing (14-15)</button>
+          </div>
+        </div>
+
+        <div class="input-group">
+          <label for="filterStartTime">Start Time</label>
+          <input type="time" id="filterStartTime" value="11:00" step="1">
+        </div>
+
+        <div class="input-group">
+          <label for="filterEndTime">End Time</label>
+          <input type="time" id="filterEndTime" value="15:00" step="1">
+        </div>
+
+        <div class="input-group">
+          <label for="searchBroker">Filter Broker No.</label>
+          <input type="number" id="searchBroker" placeholder="e.g. 58, 45, 28">
+        </div>
+
+        <div class="input-group">
+          <label for="minTurnover">Min Activity (NPR)</label>
+          <select id="minTurnover">
+            <option value="0" selected>All Activity (Rs 0+)</option>
+            <option value="1000000">Min 10 Lakh (Rs 1M+)</option>
+            <option value="5000000">Min 50 Lakh (Rs 5M+)</option>
+            <option value="10000000">Min 1 Crore (Rs 10M+)</option>
+            <option value="50000000">Min 5 Crore (Rs 50M+)</option>
+          </select>
+        </div>
+
+        <div class="filter-actions" style="align-self: flex-end;">
+          <button id="applyFilterBtn" class="btn btn-primary">Apply Filters</button>
+          <button id="resetFilterBtn" class="btn btn-secondary">Reset</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- Market Macro KPI Grid -->
+    <section class="kpi-grid">
+      <div class="card kpi-card">
+        <span class="kpi-title">TOTAL MARKET TURNOVER</span>
+        <span class="kpi-value text-green" id="kpiTurnover">NPR 0.00</span>
+      </div>
+      <div class="card kpi-card">
+        <span class="kpi-title">TOTAL SHARES TRADED</span>
+        <span class="kpi-value" id="kpiQuantity">0</span>
+      </div>
+      <div class="card kpi-card">
+        <span class="kpi-title">TOTAL TRANSACTIONS</span>
+        <span class="kpi-value text-blue" id="kpiTrades">0</span>
+      </div>
+      <div class="card kpi-card">
+        <span class="kpi-title">TOP ACCUMULATION BROKER</span>
+        <span class="kpi-value text-green" id="kpiTopAccumulator">Broker --</span>
+      </div>
+      <div class="card kpi-card">
+        <span class="kpi-title">TOP DISTRIBUTION BROKER</span>
+        <span class="kpi-value text-red" id="kpiTopDistributor">Broker --</span>
+      </div>
+    </section>
+
+    <!-- Master Broker Leaderboard Table Card -->
+    <section class="card table-card">
+      <div class="table-container" style="max-height: 700px;">
+        <table id="brokerTable">
+          <thead>
+            <tr>
+              <th data-sort="broker_id" class="sortable">Broker <span class="sort-icon"></span></th>
+              <th data-sort="gross_activity" class="sortable text-right sorted-desc">Gross Activity (NPR) <span class="sort-icon">▼</span></th>
+              <th data-sort="buy_value" class="sortable text-right">Buy Turnover <span class="sort-icon"></span></th>
+              <th data-sort="sell_value" class="sortable text-right">Sell Turnover <span class="sort-icon"></span></th>
+              <th data-sort="net_flow_value" class="sortable text-right">Net Flow (NPR) <span class="sort-icon"></span></th>
+              <th data-sort="net_flow_pct" class="sortable text-right">Net Flow % <span class="sort-icon"></span></th>
+              <th data-sort="buy_sell_ratio" class="sortable text-right">Buy/Sell Ratio <span class="sort-icon"></span></th>
+              <th>Top Bought Scrip</th>
+              <th>Top Sold Scrip</th>
+              <th>Top Accumulation (Net+)</th>
+              <th>Top Distribution (Net-)</th>
+              <th class="text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody id="brokerTableBody">
+            <!-- Rendered Dynamically -->
+          </tbody>
+        </table>
+
+        <!-- Loading Overlay -->
+        <div id="loadingOverlay" class="loading-overlay hidden">
+          <div class="spinner"></div>
+          <span>Analyzing Broker Intelligence Matrix...</span>
+        </div>
+      </div>
+
+      <!-- Footer Info -->
+      <div class="pagination-bar">
+        <div class="pagination-info" id="leaderboardInfo">Showing 0 active brokers</div>
+        <div class="pagination-controls">
+          <span style="font-size: 11px; color: var(--text-muted);">💡 Click <b>[🔍 Deep Dive]</b> or any broker row to inspect full portfolio, timeline, and counterparties</span>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Deep Broker Drilldown Modal / Drawer -->
+  <div id="drawerBackdrop" class="drawer-backdrop hidden">
+    <div class="drawer-modal">
+      
+      <!-- Drawer Header -->
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <div class="status-dot"></div>
+          <span class="drawer-title" id="drawerTitle">🏢 Broker #-- Deep Dive Intelligence</span>
+          <span class="badge" id="drawerDateBadge">2026-08-31</span>
+        </div>
+        <button id="closeDrawerBtn" class="btn-close">✕</button>
+      </div>
+
+      <!-- Broker KPI Row -->
+      <div class="kpi-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
+        <div class="card kpi-card" style="padding: 10px 14px;">
+          <span class="kpi-title">GROSS ACTIVITY</span>
+          <span class="kpi-value" id="bKpiGross">NPR 0.00</span>
+        </div>
+        <div class="card kpi-card" style="padding: 10px 14px;">
+          <span class="kpi-title">TOTAL BUY / SELL</span>
+          <span class="kpi-value" id="bKpiBuySell" style="font-size: 13px;">B: 0 | S: 0</span>
+        </div>
+        <div class="card kpi-card" style="padding: 10px 14px;">
+          <span class="kpi-title">NET FLOW VALUE</span>
+          <span class="kpi-value" id="bKpiNet">NPR 0.00</span>
+        </div>
+        <div class="card kpi-card" style="padding: 10px 14px;">
+          <span class="kpi-title">BUY / SELL RATIO</span>
+          <span class="kpi-value text-blue" id="bKpiRatio">0.00</span>
+        </div>
+        <div class="card kpi-card" style="padding: 10px 14px;">
+          <span class="kpi-title">PEAK TRADING WINDOW</span>
+          <span class="kpi-value text-green" id="bKpiPeak">--:--</span>
+        </div>
+      </div>
+
+      <!-- Intraday Velocity Timeline Chart Container -->
+      <div class="chart-container-box">
+        <div class="chart-header">
+          <span class="chart-title">📈 Intraday Trading Velocity & Accumulation Flow</span>
+          <div class="bucket-controls">
+            <span style="font-size: 10px; color: var(--text-muted); align-self: center; margin-right: 4px;">Bucket:</span>
+            <button class="btn-bucket" data-bucket="5m">5m</button>
+            <button class="btn-bucket active" data-bucket="15m">15m</button>
+            <button class="btn-bucket" data-bucket="30m">30m</button>
+            <button class="btn-bucket" data-bucket="1h">1h</button>
+          </div>
+        </div>
+        <div class="chart-wrapper">
+          <canvas id="timelineChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Traded Scrips Breakdown Table -->
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <div style="padding: 12px 16px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 12px; font-weight: 700; color: var(--text-bright); text-transform: uppercase;">📑 Complete Traded Scrips Portfolio</span>
+          <input type="text" id="scripFilterInput" placeholder="Filter symbol (e.g. SHIVM)" style="padding: 4px 8px; font-size: 11px; width: 180px;">
+        </div>
+        <div class="table-container" style="max-height: 320px;">
+          <table id="brokerScripsTable">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th class="text-right">Buy Qty</th>
+                <th class="text-right">Sell Qty</th>
+                <th class="text-right">Net Flow Qty</th>
+                <th class="text-right">Buy Value (NPR)</th>
+                <th class="text-right">Sell Value (NPR)</th>
+                <th class="text-right">Net Flow (NPR)</th>
+                <th class="text-right">Avg Buy</th>
+                <th class="text-right">Avg Sell</th>
+                <th class="text-right">Flow Status</th>
+              </tr>
+            </thead>
+            <tbody id="brokerScripsBody">
+              <!-- Rendered Dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Counterparty Intelligence Side-by-Side Matrix -->
+      <div class="cp-grid">
+        <!-- Top Bought From -->
+        <div class="cp-card">
+          <span class="cp-title" style="color: var(--accent-green);">🤝 Top Counterparties Bought From (Supply Sources)</span>
+          <div class="table-container" style="max-height: 220px;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Counter Broker</th>
+                  <th class="text-right">Amount (NPR)</th>
+                  <th class="text-right">Qty</th>
+                  <th class="text-right">Trades</th>
+                  <th class="text-right">Buy Share %</th>
+                </tr>
+              </thead>
+              <tbody id="cpBoughtBody">
+                <!-- Rendered Dynamically -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <!-- Top Sold To -->
+        <div class="cp-card">
+          <span class="cp-title" style="color: var(--accent-red);">🤝 Top Counterparties Sold To (Absorption Sinks)</span>
+          <div class="table-container" style="max-height: 220px;">
+            <table>
+              <thead>
+                <tr>
+                  <th>Counter Broker</th>
+                  <th class="text-right">Amount (NPR)</th>
+                  <th class="text-right">Qty</th>
+                  <th class="text-right">Trades</th>
+                  <th class="text-right">Sell Share %</th>
+                </tr>
+              </thead>
+              <tbody id="cpSoldBody">
+                <!-- Rendered Dynamically -->
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="visual.js"></script>
+</body>
+</html>
