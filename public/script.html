@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>NEPSE Broker Visual Analytics & Intelligence</title>
+  <title>NEPSE Scrip (Stock) Analytics & Institutional Intelligence</title>
   <link rel="stylesheet" href="styles.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -16,15 +16,15 @@
     <div class="logo-group">
       <div class="status-dot"></div>
       <span class="brand-title">NEPSE <span class="highlight">FLOORSHEET</span></span>
-      <span class="badge">BROKER INTELLIGENCE</span>
+      <span class="badge">SCRIP INTELLIGENCE</span>
     </div>
     <nav class="nav-tabs">
       <a href="index.html" class="nav-tab">📄 Raw Floorsheet</a>
-      <a href="visual.html" class="nav-tab active">🏢 Broker Analytics</a>
-      <a href="script.html" class="nav-tab">📊 Scrip Analytics</a>
+      <a href="visual.html" class="nav-tab">🏢 Broker Analytics</a>
+      <a href="script.html" class="nav-tab active">📊 Scrip Analytics</a>
     </nav>
     <div class="header-actions">
-      <button id="exportCsvBtn" class="btn btn-outline">📥 Export Matrix CSV</button>
+      <button id="exportCsvBtn" class="btn btn-outline">📥 Export Scrips CSV</button>
     </div>
   </header>
 
@@ -59,14 +59,14 @@
         </div>
 
         <div class="input-group">
-          <label for="searchBroker">Filter Broker No.</label>
-          <input type="number" id="searchBroker" placeholder="e.g. 58, 45, 28">
+          <label for="searchSymbol">Filter Stock Symbol</label>
+          <input type="text" id="searchSymbol" placeholder="e.g. SHIVM, NABIL, SONA">
         </div>
 
         <div class="input-group">
-          <label for="minTurnover">Min Activity (NPR)</label>
+          <label for="minTurnover">Min Turnover (NPR)</label>
           <select id="minTurnover">
-            <option value="0" selected>All Activity (Rs 0+)</option>
+            <option value="0" selected>All Turnover (Rs 0+)</option>
             <option value="1000000">Min 10 Lakh (Rs 1M+)</option>
             <option value="5000000">Min 50 Lakh (Rs 5M+)</option>
             <option value="10000000">Min 1 Crore (Rs 10M+)</option>
@@ -96,36 +96,35 @@
         <span class="kpi-value text-blue" id="kpiTrades">0</span>
       </div>
       <div class="card kpi-card">
-        <span class="kpi-title">TOP ACCUMULATION BROKER</span>
-        <span class="kpi-value text-green" id="kpiTopAccumulator">Broker --</span>
+        <span class="kpi-title">ACTIVE STOCKS TRADED</span>
+        <span class="kpi-value text-green" id="kpiActiveScrips">0</span>
       </div>
       <div class="card kpi-card">
-        <span class="kpi-title">TOP DISTRIBUTION BROKER</span>
-        <span class="kpi-value text-red" id="kpiTopDistributor">Broker --</span>
+        <span class="kpi-title">TOP TURNOVER LEADER</span>
+        <span class="kpi-value text-blue" id="kpiTopTurnoverScrip">--</span>
       </div>
     </section>
 
-    <!-- Master Broker Leaderboard Table Card -->
+    <!-- Master Scrip Leaderboard Table Card -->
     <section class="card table-card">
       <div class="table-container" style="max-height: 700px;">
-        <table id="brokerTable">
+        <table id="scripTable">
           <thead>
             <tr>
-              <th data-sort="broker_id" class="sortable">Broker <span class="sort-icon"></span></th>
-              <th data-sort="gross_activity" class="sortable text-right sorted-desc">Gross Activity (NPR) <span class="sort-icon">▼</span></th>
-              <th data-sort="buy_value" class="sortable text-right">Buy Turnover <span class="sort-icon"></span></th>
-              <th data-sort="sell_value" class="sortable text-right">Sell Turnover <span class="sort-icon"></span></th>
-              <th data-sort="net_flow_value" class="sortable text-right">Net Flow (NPR) <span class="sort-icon"></span></th>
-              <th data-sort="net_flow_pct" class="sortable text-right">Net Flow % <span class="sort-icon"></span></th>
-              <th data-sort="buy_sell_ratio" class="sortable text-right">Buy/Sell Ratio <span class="sort-icon"></span></th>
-              <th>Top Bought Scrip</th>
-              <th>Top Sold Scrip</th>
-              <th>Top Accumulation (Net+)</th>
-              <th>Top Distribution (Net-)</th>
+              <th data-sort="symbol" class="sortable">Symbol <span class="sort-icon"></span></th>
+              <th data-sort="turnover" class="sortable text-right sorted-desc">Turnover (NPR) <span class="sort-icon">▼</span></th>
+              <th data-sort="quantity" class="sortable text-right">Volume (Shares) <span class="sort-icon"></span></th>
+              <th data-sort="trades_count" class="sortable text-right">Trades <span class="sort-icon"></span></th>
+              <th data-sort="ltp" class="sortable text-right">LTP (NPR) <span class="sort-icon"></span></th>
+              <th data-sort="vwap" class="sortable text-right">VWAP (NPR) <span class="sort-icon"></span></th>
+              <th class="text-right">Price Range (L - H)</th>
+              <th>Top Net Buyer Broker</th>
+              <th>Top Net Seller Broker</th>
+              <th data-sort="top3_concentration_pct" class="sortable text-right">Top 3 Buyer Share % <span class="sort-icon"></span></th>
               <th class="text-right">Action</th>
             </tr>
           </thead>
-          <tbody id="brokerTableBody">
+          <tbody id="scripTableBody">
             <!-- Rendered Dynamically -->
           </tbody>
         </table>
@@ -133,69 +132,73 @@
         <!-- Loading Overlay -->
         <div id="loadingOverlay" class="loading-overlay hidden">
           <div class="spinner"></div>
-          <span>Analyzing Broker Intelligence Matrix...</span>
+          <span>Analyzing Scrip Intelligence Matrix...</span>
         </div>
       </div>
 
       <!-- Footer Info -->
       <div class="pagination-bar">
-        <div class="pagination-info" id="leaderboardInfo">Showing 0 active brokers</div>
+        <div class="pagination-info" id="leaderboardInfo">Showing 0 active stocks</div>
         <div class="pagination-controls">
-          <span style="font-size: 11px; color: var(--text-muted);">💡 Click <b>[🔍 Deep Dive]</b> or any broker row to inspect full portfolio, timeline, and counterparties</span>
+          <span style="font-size: 11px; color: var(--text-muted);">💡 Click <b>[🔍 Deep Dive]</b> or any stock row to inspect full broker roster, VWAP trajectory, and block trades</span>
         </div>
       </div>
     </section>
 
   </main>
 
-  <!-- Deep Broker Drilldown Modal / Drawer -->
+  <!-- Deep Scrip Drilldown Modal / Drawer -->
   <div id="drawerBackdrop" class="drawer-backdrop hidden">
-    <div class="drawer-modal" style="position: relative; min-height: 500px;">
+    <div class="drawer-modal" style="position: relative; min-height: 550px;">
       
       <!-- Drawer Loading Overlay -->
       <div id="drawerLoadingOverlay" class="loading-overlay hidden" style="border-radius: 8px;">
         <div class="spinner"></div>
-        <span id="drawerLoadingText">Loading Broker Deep Intelligence...</span>
+        <span id="drawerLoadingText">Analyzing Scrip Deep Intelligence...</span>
       </div>
 
       <!-- Drawer Header -->
       <div class="drawer-header">
         <div class="drawer-title-group">
           <div class="status-dot"></div>
-          <span class="drawer-title" id="drawerTitle">🏢 Broker #-- Deep Dive Intelligence</span>
+          <span class="drawer-title" id="drawerTitle">📊 Symbol Deep Intelligence</span>
           <span class="badge" id="drawerDateBadge">2026-08-31</span>
         </div>
         <button id="closeDrawerBtn" class="btn-close">✕</button>
       </div>
 
-      <!-- Broker KPI Row -->
-      <div class="kpi-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
+      <!-- Scrip Executive KPI Row -->
+      <div class="kpi-grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));">
         <div class="card kpi-card" style="padding: 10px 14px;">
-          <span class="kpi-title">GROSS ACTIVITY</span>
-          <span class="kpi-value" id="bKpiGross">NPR 0.00</span>
+          <span class="kpi-title">TOTAL TURNOVER</span>
+          <span class="kpi-value text-green" id="sKpiTurnover">NPR 0.00</span>
         </div>
         <div class="card kpi-card" style="padding: 10px 14px;">
-          <span class="kpi-title">TOTAL BUY / SELL</span>
-          <span class="kpi-value" id="bKpiBuySell" style="font-size: 13px;">B: 0 | S: 0</span>
+          <span class="kpi-title">VOLUME / TRADES</span>
+          <span class="kpi-value" id="sKpiVolTrades" style="font-size: 13px;">Vol: 0 | Tr: 0</span>
         </div>
         <div class="card kpi-card" style="padding: 10px 14px;">
-          <span class="kpi-title">NET FLOW VALUE</span>
-          <span class="kpi-value" id="bKpiNet">NPR 0.00</span>
+          <span class="kpi-title">LTP / VWAP</span>
+          <span class="kpi-value text-blue" id="sKpiLtpVwap" style="font-size: 13px;">LTP: 0 | VWAP: 0</span>
         </div>
         <div class="card kpi-card" style="padding: 10px 14px;">
-          <span class="kpi-title">BUY / SELL RATIO</span>
-          <span class="kpi-value text-blue" id="bKpiRatio">0.00</span>
+          <span class="kpi-title">PRICE RANGE (L - H)</span>
+          <span class="kpi-value" id="sKpiRange" style="font-size: 13px;">0.00 - 0.00</span>
         </div>
         <div class="card kpi-card" style="padding: 10px 14px;">
-          <span class="kpi-title">PEAK TRADING WINDOW</span>
-          <span class="kpi-value text-green" id="bKpiPeak">--:--</span>
+          <span class="kpi-title">TOP 3 BUYER SHARE</span>
+          <span class="kpi-value text-green" id="sKpiConcentration">0.0%</span>
+        </div>
+        <div class="card kpi-card" style="padding: 10px 14px;">
+          <span class="kpi-title">PEAK VOLUME WINDOW</span>
+          <span class="kpi-value text-blue" id="sKpiPeak">--:--</span>
         </div>
       </div>
 
-      <!-- Intraday Velocity Timeline Chart Container -->
+      <!-- Intraday Price & Volume Flow Timeline Chart Container -->
       <div class="chart-container-box">
         <div class="chart-header">
-          <span class="chart-title">📈 Intraday Trading Velocity & Accumulation Flow</span>
+          <span class="chart-title">📈 Intraday Price Trajectory (VWAP) & Volume Flow</span>
           <div class="bucket-controls">
             <span style="font-size: 10px; color: var(--text-muted); align-self: center; margin-right: 4px;">Bucket:</span>
             <button class="btn-bucket" data-bucket="5m">5m</button>
@@ -209,73 +212,83 @@
         </div>
       </div>
 
-      <!-- Traded Scrips Breakdown Table -->
+      <!-- Complete Broker Participation Matrix -->
       <div class="card" style="padding: 0; overflow: hidden;">
         <div style="padding: 12px 16px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
-          <span style="font-size: 12px; font-weight: 700; color: var(--text-bright); text-transform: uppercase;">📑 Complete Traded Scrips Portfolio</span>
-          <input type="text" id="scripFilterInput" placeholder="Filter symbol (e.g. SHIVM)" style="padding: 4px 8px; font-size: 11px; width: 180px;">
+          <span style="font-size: 12px; font-weight: 700; color: var(--text-bright); text-transform: uppercase;">🏢 Broker Participation & Net Flow Matrix</span>
+          <input type="number" id="brokerFilterInput" placeholder="Filter broker (e.g. 58)" style="padding: 4px 8px; font-size: 11px; width: 160px;">
         </div>
         <div class="table-container" style="max-height: 320px;">
-          <table id="brokerScripsTable">
+          <table id="scripBrokersTable">
             <thead>
               <tr>
-                <th>Symbol</th>
+                <th>Broker</th>
                 <th class="text-right">Buy Qty</th>
                 <th class="text-right">Sell Qty</th>
                 <th class="text-right">Net Flow Qty</th>
-                <th class="text-right">Buy Value (NPR)</th>
-                <th class="text-right">Sell Value (NPR)</th>
+                <th class="text-right">Buy Turnover (NPR)</th>
+                <th class="text-right">Sell Turnover (NPR)</th>
                 <th class="text-right">Net Flow (NPR)</th>
-                <th class="text-right">Avg Buy</th>
-                <th class="text-right">Avg Sell</th>
+                <th class="text-right">Buy VWAP</th>
+                <th class="text-right">Sell VWAP</th>
                 <th class="text-right">Flow Status</th>
               </tr>
             </thead>
-            <tbody id="brokerScripsBody">
+            <tbody id="scripBrokersBody">
               <!-- Rendered Dynamically -->
             </tbody>
           </table>
         </div>
       </div>
 
-      <!-- Counterparty Intelligence Side-by-Side Matrix -->
+      <!-- Counterparty Deal Matrix & Whale Deals 2-Col Grid -->
       <div class="cp-grid">
-        <!-- Top Bought From -->
+        <!-- Counterparty Deal Matrix -->
         <div class="cp-card">
-          <span class="cp-title" style="color: var(--accent-green);">🤝 Top Counterparties Bought From (Supply Sources)</span>
-          <div class="table-container" style="max-height: 220px;">
+          <span class="cp-title" style="color: var(--accent-blue);">🤝 Direct Counterparty Deal Routes (Top Supply Pairs)</span>
+          <div class="table-container" style="max-height: 260px;">
             <table>
               <thead>
                 <tr>
-                  <th>Counter Broker</th>
+                  <th>Route (Buyer ➔ Seller)</th>
                   <th class="text-right">Amount (NPR)</th>
                   <th class="text-right">Qty</th>
-                  <th class="text-right">Trades</th>
-                  <th class="text-right">Buy Share %</th>
+                  <th class="text-right">Route VWAP</th>
+                  <th class="text-right">Share %</th>
                 </tr>
               </thead>
-              <tbody id="cpBoughtBody">
+              <tbody id="cpRouteBody">
                 <!-- Rendered Dynamically -->
               </tbody>
             </table>
           </div>
         </div>
 
-        <!-- Top Sold To -->
+        <!-- Whale & Block Deal Scanner -->
         <div class="cp-card">
-          <span class="cp-title" style="color: var(--accent-red);">🤝 Top Counterparties Sold To (Absorption Sinks)</span>
-          <div class="table-container" style="max-height: 220px;">
+          <div style="display: flex; justify-content: space-between; align-items: center;">
+            <span class="cp-title" style="color: var(--accent-green);">🐋 Whale & Block Trade Scanner</span>
+            <select id="whaleFilterSelect" style="padding: 2px 6px; font-size: 10px; background: var(--bg-secondary); color: var(--text-bright); border: 1px solid var(--border-color); border-radius: 4px;">
+              <option value="all" selected>All Whales (>=1k / >=5L)</option>
+              <option value="qty1k">Qty >= 1,000 shares</option>
+              <option value="qty5k">Qty >= 5,000 shares</option>
+              <option value="val5l">Value >= Rs 5 Lakh</option>
+              <option value="val10l">Value >= Rs 10 Lakh</option>
+            </select>
+          </div>
+          <div class="table-container" style="max-height: 260px;">
             <table>
               <thead>
                 <tr>
-                  <th>Counter Broker</th>
-                  <th class="text-right">Amount (NPR)</th>
+                  <th>Time</th>
+                  <th>Contract ID</th>
+                  <th>Buyer ➔ Seller</th>
                   <th class="text-right">Qty</th>
-                  <th class="text-right">Trades</th>
-                  <th class="text-right">Sell Share %</th>
+                  <th class="text-right">Rate</th>
+                  <th class="text-right">Amount (NPR)</th>
                 </tr>
               </thead>
-              <tbody id="cpSoldBody">
+              <tbody id="whaleDealsBody">
                 <!-- Rendered Dynamically -->
               </tbody>
             </table>
@@ -286,6 +299,6 @@
     </div>
   </div>
 
-  <script src="visual.js"></script>
+  <script src="script.js"></script>
 </body>
 </html>

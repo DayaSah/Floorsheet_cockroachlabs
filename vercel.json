@@ -10,6 +10,10 @@
       "use": "@vercel/python"
     },
     {
+      "src": "api/script.py",
+      "use": "@vercel/python"
+    },
+    {
       "src": "public/**",
       "use": "@vercel/static"
     }
@@ -22,6 +26,14 @@
     {
       "src": "/api/visual",
       "dest": "/api/visual.py"
+    },
+    {
+      "src": "/api/script/(.*)",
+      "dest": "/api/script.py"
+    },
+    {
+      "src": "/api/script",
+      "dest": "/api/script.py"
     },
     {
       "src": "/api/(.*)",

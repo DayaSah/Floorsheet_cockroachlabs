@@ -283,6 +283,30 @@ flowchart LR
 
 ---
 
+## 📊 Scrip (Stock) Analytics Suite
+
+The third analytical pillar of the platform is the **Dedicated Scrip (Stock) Analytics Suite** (`public/script.html` + `api/script.py`):
+
+```mermaid
+flowchart LR
+    A["Raw Transactions<br/>(CockroachDB)"] --> B["api/script.py<br/>(Single-Pass CTEs)"]
+    B --> C["Scrip Leaderboard<br/>(Turnover, VWAP, LTP)"]
+    B --> D["Broker Participation Matrix<br/>(Buy/Sell VWAP, Flow Bias)"]
+    B --> E["Deep Drilldown<br/>(Dual-Axis Timeline & Block Deals)"]
+```
+
+### Key Scrip Intelligence Modules:
+1. **Master Scrip Leaderboard**: Complete ranking of all traded companies by Turnover, Volume, Trades, LTP, Volume-Weighted Average Price (VWAP), and Intraday Price Range.
+2. **Top Net Buyer & Seller Brokers**: Highlights which brokers accumulated or supplied the most net shares in each stock.
+3. **Top 3 Buyer Concentration (%)**: Quantifies whether buying volume is institutional/concentrated vs retail/dispersed.
+4. **Dual-Axis Chart.js Timeline**: Visualizes price & VWAP trajectory alongside buy/sell volume bars across configurable time buckets (`5m`, `15m`, `30m`, `1h`).
+5. **Direct Counterparty Trade Routes**: Maps the exact broker-to-broker supply and absorption network for the stock.
+6. **Whale & Block Deal Scanner**: Pinpoints large transaction tickets ($\ge 1,000$ shares or $\ge 500,000$ NPR) with dynamic threshold filtering.
+
+📖 For complete documentation on all scrip features and formulas, see [Explain_script.md](file:///home/jagdish/Desktop/Sandbox/Floorsheet%20Visualization/Floorsheet_cockroachlabs-main/Explain_script.md).
+
+---
+
 ## ❤️ A Note of Passion & Dedication
 
 ```
