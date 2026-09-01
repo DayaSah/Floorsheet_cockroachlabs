@@ -219,16 +219,16 @@
           <table id="brokerScripsTable">
             <thead>
               <tr>
-                <th>Symbol</th>
-                <th class="text-right">Buy Qty</th>
-                <th class="text-right">Sell Qty</th>
-                <th class="text-right">Net Flow Qty</th>
-                <th class="text-right">Buy Value (NPR)</th>
-                <th class="text-right">Sell Value (NPR)</th>
-                <th class="text-right">Net Flow (NPR)</th>
-                <th class="text-right">Avg Buy</th>
-                <th class="text-right">Avg Sell</th>
-                <th class="text-right">Flow Status</th>
+                <th data-sort="symbol" class="sortable">Symbol <span class="sort-icon"></span></th>
+                <th data-sort="buy_qty" class="sortable text-right">Buy Qty <span class="sort-icon"></span></th>
+                <th data-sort="sell_qty" class="sortable text-right">Sell Qty <span class="sort-icon"></span></th>
+                <th data-sort="net_flow_qty" class="sortable text-right">Net Flow Qty <span class="sort-icon"></span></th>
+                <th data-sort="buy_value" class="sortable text-right sorted-desc">Buy Value (NPR) <span class="sort-icon">▼</span></th>
+                <th data-sort="sell_value" class="sortable text-right">Sell Value (NPR) <span class="sort-icon"></span></th>
+                <th data-sort="net_flow_value" class="sortable text-right">Net Flow (NPR) <span class="sort-icon"></span></th>
+                <th data-sort="avg_buy_rate" class="sortable text-right">Avg Buy <span class="sort-icon"></span></th>
+                <th data-sort="avg_sell_rate" class="sortable text-right">Avg Sell <span class="sort-icon"></span></th>
+                <th data-sort="flow_status" class="sortable text-right">Flow Status <span class="sort-icon"></span></th>
               </tr>
             </thead>
             <tbody id="brokerScripsBody">

@@ -7,6 +7,8 @@ const state = {
   minActivity: 0,
   sortBy: 'gross_activity',
   sortOrder: 'desc',
+  drawerSortBy: 'buy_value',
+  drawerSortOrder: 'desc',
   brokers: [],
   selectedBrokerId: null,
   currentBrokerData: null,
@@ -163,9 +165,35 @@ function bindEventListeners() {
     if (state.currentBrokerData && state.currentBrokerData.scrips) {
       const q = scripFilterInput.value.trim().toUpperCase();
       const filtered = state.currentBrokerData.scrips.filter(s => s.symbol.includes(q));
-      renderDrawerScrips(filtered);
-    }
+  // Drawer Scrips Table Sorting
+  document.querySelectorAll('#brokerScripsTable th.sortable').forEach(th => {
+    th.addEventListener('click', () => {
+      const field = th.dataset.sort;
+      if (state.drawerSortBy === field) {
+        state.drawerSortOrder = state.drawerSortOrder === 'asc' ? 'desc' : 'asc';
+      } else {
+        state.drawerSortBy = field;
+        state.drawerSortOrder = 'desc';
+      }
+      updateDrawerSortUI(th);
+      if (state.currentBrokerData && state.currentBrokerData.scrips) {
+        const q = scripFilterInput.value.trim().toUpperCase();
+        const filtered = q ? state.currentBrokerData.scrips.filter(s => s.symbol.includes(q)) : state.currentBrokerData.scrips;
+        renderDrawerScrips(filtered);
+      }
+    });
   });
+}
+
+function updateDrawerSortUI(activeTh) {
+  document.querySelectorAll('#brokerScripsTable th.sortable').forEach(th => {
+    th.classList.remove('sorted-asc', 'sorted-desc');
+    const icon = th.querySelector('.sort-icon');
+    if (icon) icon.textContent = '';
+  });
+  activeTh.classList.add(`sorted-${state.drawerSortOrder}`);
+  const icon = activeTh.querySelector('.sort-icon');
+  if (icon) icon.textContent = state.drawerSortOrder === 'asc' ? '▲' : '▼';
 }
 
 function updateSortUI(activeTh) {
@@ -519,7 +547,20 @@ function renderDrawerScrips(scrips) {
     return;
   }
 
-  brokerScripsBody.innerHTML = scrips.map(s => {
+  let list = [...scrips];
+  list.sort((a, b) => {
+    let valA = a[state.drawerSortBy];
+    let valB = b[state.drawerSortBy];
+    if (valA === null || valA === undefined) valA = -Infinity;
+    if (valB === null || valB === undefined) valB = -Infinity;
+    if (state.drawerSortOrder === 'asc') {
+      return valA > valB ? 1 : -1;
+    } else {
+      return valA < valB ? 1 : -1;
+    }
+  });
+
+  brokerScripsBody.innerHTML = list.map(s => {
     const isAccum = s.flow_status === 'ACCUMULATING';
     const badge = isAccum 
       ? `<span class="badge-accum">🟢 ACCUMULATING</span>` 
