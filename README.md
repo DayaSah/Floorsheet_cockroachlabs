@@ -81,15 +81,16 @@ The system runs on **CockroachDB** (distributed, PostgreSQL wire-compatible SQL 
 ```sql
 CREATE TABLE public.floorsheet_raw (
     contract_id    BIGINT NOT NULL,
-    symbol         VARCHAR NOT NULL,
-    buyer_broker   BIGINT NOT NULL,
-    seller_broker  BIGINT NOT NULL,
+    symbol         VARCHAR(20) NOT NULL,
+    buyer_broker   SMALLINT NOT NULL,
+    seller_broker  SMALLINT NOT NULL,
     quantity       BIGINT NOT NULL,
-    rate           NUMERIC NOT NULL,
-    amount         NUMERIC NOT NULL,
+    rate           DECIMAL(10,2) NOT NULL,
+    amount         DECIMAL(15,2) NOT NULL,
     trade_time     TIMESTAMPTZ NOT NULL,
-    CONSTRAINT floorsheet_raw_pkey PRIMARY KEY (contract_id ASC)
-);
+    CONSTRAINT floorsheet_raw_pkey PRIMARY KEY (contract_id ASC),
+    CONSTRAINT chk_positive_values CHECK (quantity > 0 AND rate > 0 AND amount > 0)
+) WITH (schema_locked = true);
 ```
 
 ### High-Performance Indexes
@@ -189,14 +190,15 @@ Run the DDL query in your CockroachDB console:
 ```sql
 CREATE TABLE IF NOT EXISTS floorsheet_raw (
     contract_id    BIGINT PRIMARY KEY,
-    symbol         VARCHAR NOT NULL,
-    buyer_broker   BIGINT NOT NULL,
-    seller_broker  BIGINT NOT NULL,
+    symbol         VARCHAR(20) NOT NULL,
+    buyer_broker   SMALLINT NOT NULL,
+    seller_broker  SMALLINT NOT NULL,
     quantity       BIGINT NOT NULL,
-    rate           NUMERIC NOT NULL,
-    amount         NUMERIC NOT NULL,
-    trade_time     TIMESTAMPTZ NOT NULL
-);
+    rate           DECIMAL(10,2) NOT NULL,
+    amount         DECIMAL(15,2) NOT NULL,
+    trade_time     TIMESTAMPTZ NOT NULL,
+    CONSTRAINT chk_positive_values CHECK (quantity > 0 AND rate > 0 AND amount > 0)
+) WITH (schema_locked = true);
 
 CREATE INDEX IF NOT EXISTS idx_symbol_time ON floorsheet_raw (symbol ASC, trade_time ASC);
 CREATE INDEX IF NOT EXISTS idx_buyer_time  ON floorsheet_raw (buyer_broker ASC, trade_time ASC);
