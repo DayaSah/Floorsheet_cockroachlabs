@@ -258,6 +258,31 @@ python verify.py --symbol SHIVM --pages 5
 
 ---
 
+## 📈 Broker Visual Analytics Suite
+
+In addition to the raw transaction browser, the system features a dedicated **Institutional Broker Visual Analytics Suite** (`public/visual.html` + `api/visual.py`):
+
+```mermaid
+flowchart LR
+    A["Raw Transactions<br/>(CockroachDB)"] --> B["api/visual.py<br/>(Single-Pass CTEs)"]
+    B --> C["Broker Leaderboard<br/>(Gross, Net Flow, Ratios)"]
+    B --> D["Top Scrips Matrix<br/>(Accumulation / Distribution)"]
+    B --> E["Deep Drilldown<br/>(Intraday Velocity & Counterparties)"]
+```
+
+### Key Analytical Features:
+1. **Master Broker Matrix**: Real-time ranking of all active brokers by Gross Activity, Buy/Sell Turnover, Net Flow Value, Net Flow %, and Buy/Sell Ratios.
+2. **Top Scrip Accumulation & Distribution**: Instantly identifies each broker's top gross buy/sell and top net accumulation (`Buy > Sell`) vs distribution (`Sell > Buy`).
+3. **Intraday Time Filtering**: Granular time-slice analysis (`Opening 11-12`, `Mid-Day 12-14`, `Closing 14-15`, or custom ranges).
+4. **Deep Broker Drilldown Intelligence**:
+   - **Intraday Flow Chart**: Dynamic multi-bucket (`5m`, `15m`, `30m`, `1h`) Chart.js visualization.
+   - **Portfolio Scrip Breakdown**: All traded scrips with Volume-Weighted Average Prices (VWAP) and flow badges (`🟢 ACCUMULATING` / `🔴 DISTRIBUTING`).
+   - **Counterparty Matrix**: Network analysis revealing top brokers bought from (supply sources) and sold to (absorption sinks) with percentage market shares.
+
+📖 For complete documentation on all visual features and metrics, see [Explain_visual.md](file:///home/jagdish/Desktop/Sandbox/Floorsheet%20Visualization/Floorsheet_cockroachlabs-main/Explain_visual.md).
+
+---
+
 ## ❤️ A Note of Passion & Dedication
 
 ```
