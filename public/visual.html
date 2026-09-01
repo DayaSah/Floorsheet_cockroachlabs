@@ -149,8 +149,14 @@
 
   <!-- Deep Broker Drilldown Modal / Drawer -->
   <div id="drawerBackdrop" class="drawer-backdrop hidden">
-    <div class="drawer-modal">
+    <div class="drawer-modal" style="position: relative; min-height: 500px;">
       
+      <!-- Drawer Loading Overlay -->
+      <div id="drawerLoadingOverlay" class="loading-overlay hidden" style="border-radius: 8px;">
+        <div class="spinner"></div>
+        <span id="drawerLoadingText">Loading Broker Deep Intelligence...</span>
+      </div>
+
       <!-- Drawer Header -->
       <div class="drawer-header">
         <div class="drawer-title-group">

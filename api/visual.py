@@ -42,7 +42,7 @@ def get_db_connection():
         raise HTTPException(status_code=500, detail=f"Database connection error: {str(e)}")
 
 def build_time_bounds(date_str: str, start_time = None, end_time = None):
-    """Builds ISO timestamp bounds with Nepal timezone offset (+05:45)."""
+    """Builds timestamp bounds matching stored local clock times."""
     s_time = start_time.strip() if isinstance(start_time, str) and start_time.strip() else "00:00:00"
     e_time = end_time.strip() if isinstance(end_time, str) and end_time.strip() else "23:59:59"
     
@@ -51,8 +51,8 @@ def build_time_bounds(date_str: str, start_time = None, end_time = None):
     if len(e_time) == 5:
         e_time += ":59"
         
-    start_ts = f"{date_str} {s_time}+05:45"
-    end_ts = f"{date_str} {e_time}+05:45"
+    start_ts = f"{date_str} {s_time}"
+    end_ts = f"{date_str} {e_time}"
     return start_ts, end_ts
 
 @app.get("/api/visual/dates")
@@ -414,14 +414,14 @@ def get_broker_detail(
         timeline_query = f"""
             WITH timeline_flows AS (
                 SELECT 
-                    TO_CHAR(trade_time AT TIME ZONE 'Asia/Kathmandu', 'HH24') || ':' || 
-                    LPAD((FLOOR(EXTRACT(MINUTE FROM trade_time AT TIME ZONE 'Asia/Kathmandu') / {bucket_mins}) * {bucket_mins})::TEXT, 2, '0') AS time_bucket,
+                    TO_CHAR(trade_time, 'HH24') || ':' || 
+                    LPAD((FLOOR(EXTRACT(MINUTE FROM trade_time) / {bucket_mins}) * {bucket_mins})::TEXT, 2, '0') AS time_bucket,
                     amount AS buy_amt, 0::numeric AS sell_amt, 1 AS trades
                 FROM floorsheet_raw WHERE buyer_broker = %s AND trade_time >= %s AND trade_time <= %s
                 UNION ALL
                 SELECT 
-                    TO_CHAR(trade_time AT TIME ZONE 'Asia/Kathmandu', 'HH24') || ':' || 
-                    LPAD((FLOOR(EXTRACT(MINUTE FROM trade_time AT TIME ZONE 'Asia/Kathmandu') / {bucket_mins}) * {bucket_mins})::TEXT, 2, '0') AS time_bucket,
+                    TO_CHAR(trade_time, 'HH24') || ':' || 
+                    LPAD((FLOOR(EXTRACT(MINUTE FROM trade_time) / {bucket_mins}) * {bucket_mins})::TEXT, 2, '0') AS time_bucket,
                     0::numeric AS buy_amt, amount AS sell_amt, 1 AS trades
                 FROM floorsheet_raw WHERE seller_broker = %s AND trade_time >= %s AND trade_time <= %s
             )

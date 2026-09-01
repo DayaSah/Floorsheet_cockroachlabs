@@ -36,6 +36,8 @@ const loadingOverlay = document.getElementById('loadingOverlay');
 
 // Drawer Elements
 const drawerBackdrop = document.getElementById('drawerBackdrop');
+const drawerLoadingOverlay = document.getElementById('drawerLoadingOverlay');
+const drawerLoadingText = document.getElementById('drawerLoadingText');
 const drawerTitle = document.getElementById('drawerTitle');
 const drawerDateBadge = document.getElementById('drawerDateBadge');
 const closeDrawerBtn = document.getElementById('closeDrawerBtn');
@@ -352,6 +354,11 @@ async function openBrokerDeepDive(brokerId) {
   drawerBackdrop.classList.remove('hidden');
   document.body.style.overflow = 'hidden';
 
+  if (drawerLoadingOverlay) {
+    drawerLoadingOverlay.classList.remove('hidden');
+    drawerLoadingText.textContent = `Analyzing Broker #${brokerId} Intelligence...`;
+  }
+
   await fetchBrokerDeepDive(brokerId);
 }
 
@@ -362,6 +369,10 @@ function closeDrawer() {
 }
 
 async function fetchBrokerDeepDive(brokerId) {
+  if (drawerLoadingOverlay) {
+    drawerLoadingOverlay.classList.remove('hidden');
+  }
+
   try {
     const params = new URLSearchParams({
       date: state.date,
@@ -380,8 +391,15 @@ async function fetchBrokerDeepDive(brokerId) {
     renderDrawerChart(data.timeline);
     renderDrawerScrips(data.scrips);
     renderDrawerCounterparties(data.counterparties);
+
+    if (drawerLoadingOverlay) {
+      drawerLoadingOverlay.classList.add('hidden');
+    }
   } catch (err) {
     console.error('Failed to fetch broker deep dive:', err);
+    if (drawerLoadingText) {
+      drawerLoadingText.innerHTML = `<span style="color: var(--accent-red);">Failed to load broker intelligence.<br/><small>${err.message}</small></span>`;
+    }
   }
 }
 
