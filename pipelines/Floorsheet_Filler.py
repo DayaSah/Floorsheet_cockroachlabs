@@ -9,10 +9,18 @@ from psycopg2.extras import execute_values
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from datetime import datetime, timedelta
-from dotenv import load_dotenv
 
-# Load local .env file if running locally
-load_dotenv()
+# Ensure project root is on sys.path
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(PROJECT_ROOT, ".env"))
+    load_dotenv()
+except ImportError:
+    pass
 
 DB_URI = os.getenv("DB_URI")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")

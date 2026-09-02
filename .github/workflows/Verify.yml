@@ -41,7 +41,7 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           if [ -n "${{ inputs.symbol }}" ]; then
-            python verify.py --symbol "${{ inputs.symbol }}" --pages "${{ inputs.pages || '5' }}"
+            python pipelines/verify.py --symbol "${{ inputs.symbol }}"
           else
-            python verify.py --pages "${{ inputs.pages || '5' }}"
+            python pipelines/verify.py
           fi

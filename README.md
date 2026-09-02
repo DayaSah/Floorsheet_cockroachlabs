@@ -279,7 +279,7 @@ flowchart LR
    - **Portfolio Scrip Breakdown**: All traded scrips with Volume-Weighted Average Prices (VWAP) and flow badges (`🟢 ACCUMULATING` / `🔴 DISTRIBUTING`).
    - **Counterparty Matrix**: Network analysis revealing top brokers bought from (supply sources) and sold to (absorption sinks) with percentage market shares.
 
-📖 For complete documentation on all visual features and metrics, see [Explain_visual.md](file:///home/jagdish/Desktop/Sandbox/Floorsheet%20Visualization/Floorsheet_cockroachlabs-main/Explain_visual.md).
+📖 For complete documentation on all visual features and metrics, see [docs/guides/Explain_visual.md](file:///home/jagdish/Desktop/Sandbox/Floorsheet%20Visualization/Floorsheet_cockroachlabs-main/docs/guides/Explain_visual.md).
 
 ---
 
@@ -303,7 +303,7 @@ flowchart LR
 5. **Direct Counterparty Trade Routes**: Maps the exact broker-to-broker supply and absorption network for the stock.
 6. **Whale & Block Deal Scanner**: Pinpoints large transaction tickets ($\ge 1,000$ shares or $\ge 500,000$ NPR) with dynamic threshold filtering.
 
-📖 For complete documentation on all scrip features and formulas, see [Explain_script.md](file:///home/jagdish/Desktop/Sandbox/Floorsheet%20Visualization/Floorsheet_cockroachlabs-main/Explain_script.md).
+📖 For complete documentation on all scrip features and formulas, see [docs/guides/Explain_script.md](file:///home/jagdish/Desktop/Sandbox/Floorsheet%20Visualization/Floorsheet_cockroachlabs-main/docs/guides/Explain_script.md).
 
 ---
 
@@ -328,7 +328,26 @@ flowchart LR
 5. **Mathematically Strict Multi-Day VWAP**: Calculated from cumulative volume-weighted turnover ($\frac{\sum \text{Turnover}}{\sum \text{Quantity}}$).
 6. **Day-by-Day Trajectory Charts**: Interactive Chart.js daily net flow bars and VWAP curves.
 
-📖 For complete documentation on all multi-day features and formulas, see [Explain_multiday.md](file:///home/jagdish/Desktop/Sandbox/Floorsheet%20Visualization/Floorsheet_cockroachlabs-main/Explain_multiday.md).
+📖 For complete documentation on all multi-day features and formulas, see [docs/guides/Explain_multiday.md](file:///home/jagdish/Desktop/Sandbox/Floorsheet%20Visualization/Floorsheet_cockroachlabs-main/docs/guides/Explain_multiday.md).
+
+---
+
+## 📁 Repository Directory Structure
+
+```text
+Floorsheet_cockroachlabs-main/
+├── .github/workflows/          # Automated GitHub Actions Cron Jobs (Daily Scraper, Filler, Verifier)
+├── api/                        # Vercel Serverless Backend Microservices (FastAPI / Python)
+├── public/                     # Frontend Web Applications & TradingView Theme Assets
+├── scripts/                    # High-Performance Analytical Engines & Summary ETL
+├── pipelines/                  # Automated Scrapers, Fillers & Dual-Table Verifiers
+├── docs/                       # Complete Documentation Hub
+│   ├── guides/                 # User Guides (Explain_visual.md, Explain_script.md, Explain_multiday.md)
+│   └── plans/                  # Architectural Plans, Blueprints & Research Notes
+├── requirements.txt            # Python Dependencies
+├── vercel.json                 # Vercel Serverless Build & Routing Rules
+└── README.md                   # Master Documentation
+```
 
 ---
 

@@ -29,4 +29,4 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
-          python Floorsheet_Daily_Update.py
+          python pipelines/Floorsheet_Daily_Update.py

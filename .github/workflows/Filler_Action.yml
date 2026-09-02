@@ -43,4 +43,4 @@ jobs:
           INPUT_END_DATE: ${{ inputs.end_date }}
           INPUT_SYMBOLS: ${{ inputs.symbols }}
         run: |
-          python Floorsheet_Filler.py
+          python pipelines/Floorsheet_Filler.py
