@@ -160,11 +160,18 @@ function bindEventListeners() {
     });
   });
 
+  // Date Picker Change
+  filterDate.addEventListener('change', handleApplyFilters);
+
   // Scrips Filter in Drawer
   scripFilterInput.addEventListener('input', () => {
     if (state.currentBrokerData && state.currentBrokerData.scrips) {
       const q = scripFilterInput.value.trim().toUpperCase();
       const filtered = state.currentBrokerData.scrips.filter(s => s.symbol.includes(q));
+      renderDrawerScrips(filtered);
+    }
+  });
+
   // Drawer Scrips Table Sorting
   document.querySelectorAll('#brokerScripsTable th.sortable').forEach(th => {
     th.addEventListener('click', () => {

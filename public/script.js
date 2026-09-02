@@ -172,11 +172,17 @@ function bindEventListeners() {
     }
   });
 
+  // Date Picker Change
+  filterDate.addEventListener('change', handleApplyFilters);
+
   // Whale Deals Filter Selector
   whaleFilterSelect.addEventListener('change', () => {
     state.whaleFilter = whaleFilterSelect.value;
     if (state.currentScripData && state.currentScripData.whales) {
       renderDrawerWhales(filterWhalesList(state.currentScripData.whales));
+    }
+  });
+
   // Drawer Scrip Brokers Table Sorting
   document.querySelectorAll('#scripBrokersTable th.sortable').forEach(th => {
     th.addEventListener('click', () => {

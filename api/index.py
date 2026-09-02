@@ -4,9 +4,18 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 from fastapi import FastAPI, Query, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
-load_dotenv()
+# Fallback: check .env in root if DB_URI not in env
+if not os.getenv("DB_URI") and os.path.exists(".env"):
+    with open(".env", "r") as f:
+        for line in f:
+            if line.strip().startswith("DB_URI="):
+                os.environ["DB_URI"] = line.strip().split("DB_URI=", 1)[1].strip().strip('"').strip("'")
 
 app = FastAPI(title="NEPSE Floorsheet API")
 
