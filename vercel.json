@@ -14,6 +14,10 @@
       "use": "@vercel/python"
     },
     {
+      "src": "api/multiday.py",
+      "use": "@vercel/python"
+    },
+    {
       "src": "public/**",
       "use": "@vercel/static"
     }
@@ -34,6 +38,14 @@
     {
       "src": "/api/script",
       "dest": "/api/script.py"
+    },
+    {
+      "src": "/api/multiday/(.*)",
+      "dest": "/api/multiday.py"
+    },
+    {
+      "src": "/api/multiday",
+      "dest": "/api/multiday.py"
     },
     {
       "src": "/api/(.*)",

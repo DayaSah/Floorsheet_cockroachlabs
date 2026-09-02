@@ -307,6 +307,31 @@ flowchart LR
 
 ---
 
+## 🔄 Multi-Day Historical Flow Analytics Suite
+
+The fourth pillar of the platform is the **Multi-Day Broker & Scrip Flow Suite** (`public/multiday.html` + `api/multiday.py` + `scripts/daily_summary_etl.py`):
+
+```mermaid
+flowchart LR
+    A["Raw Floorsheet<br/>(1.5M contracts / month)"] --> B["daily_broker_scrip_summary<br/>(97% Data Reduction)"]
+    B --> C["api/multiday.py<br/>(Multi-Session Aggregation)"]
+    C --> D["Multi-Day Broker Leaderboard<br/>(Persistence & Streaks)"]
+    C --> E["Multi-Day Scrip Accumulation<br/>(Weighted Multi-Day VWAP)"]
+    C --> F["Day-by-Day Trajectory Charts<br/>(Chart.js Bar/Line)"]
+```
+
+### Key Multi-Day Analytical Capabilities:
+1. **Pre-Aggregated CockroachDB Summary Layer**: Compresses 1.5 Million raw contracts/month into ~50k rows, enabling instant sub-second multi-day queries.
+2. **Idempotent ETL & Audit Table (`analytics_etl_runs`)**: Reconciles raw vs summary quantities and turnover automatically.
+3. **Trading-Session-Aware Presets**: `3D`, `5D (1W)`, `10D (2W)`, `20D (1M)`, and `Custom Range` accurately count open market sessions.
+4. **Buy Persistence & Streak Intelligence**: Detects brokers with steady multi-day accumulation conviction ($\ge 80\%$ positive net flow days).
+5. **Mathematically Strict Multi-Day VWAP**: Calculated from cumulative volume-weighted turnover ($\frac{\sum \text{Turnover}}{\sum \text{Quantity}}$).
+6. **Day-by-Day Trajectory Charts**: Interactive Chart.js daily net flow bars and VWAP curves.
+
+📖 For complete documentation on all multi-day features and formulas, see [Explain_multiday.md](file:///home/jagdish/Desktop/Sandbox/Floorsheet%20Visualization/Floorsheet_cockroachlabs-main/Explain_multiday.md).
+
+---
+
 ## ❤️ A Note of Passion & Dedication
 
 ```

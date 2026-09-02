@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NEPSE Multi-Day Broker & Scrip Flow Analytics</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+  <!-- Top Navigation Bar -->
+  <header class="navbar">
+    <div class="logo-group">
+      <div class="status-dot"></div>
+      <span class="brand-title">NEPSE <span class="highlight">FLOORSHEET</span></span>
+      <span class="badge">MULTI-DAY FLOW</span>
+    </div>
+    <nav class="nav-tabs">
+      <a href="index.html" class="nav-tab">📄 Raw Floorsheet</a>
+      <a href="visual.html" class="nav-tab">🏢 Broker Analytics</a>
+      <a href="script.html" class="nav-tab">📊 Scrip Analytics</a>
+      <a href="multiday.html" class="nav-tab active">🔄 Multi-Day Flow</a>
+    </nav>
+    <div class="header-actions">
+      <button id="exportCsvBtn" class="btn btn-outline">📥 Export Multi-Day CSV</button>
+    </div>
+  </header>
+
+  <main class="container">
+    
+    <!-- Control Filter Panel -->
+    <section class="card filter-card">
+      <div class="filter-grid" style="grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));">
+        
+        <!-- Date Preset Chips -->
+        <div class="input-group" style="grid-column: span 2;">
+          <label>Trading Window Presets (Actual Sessions)</label>
+          <div class="time-chips">
+            <button class="chip" data-preset="3D">3 Days</button>
+            <button class="chip active" data-preset="5D">5 Days (1 Week)</button>
+            <button class="chip" data-preset="10D">10 Days (2 Weeks)</button>
+            <button class="chip" data-preset="20D">20 Days (1 Month)</button>
+            <button class="chip" data-preset="CUSTOM">Custom Range</button>
+          </div>
+        </div>
+
+        <div class="input-group custom-date-group hidden" id="customStartGroup">
+          <label for="filterStartDate">From Date</label>
+          <input type="date" id="filterStartDate">
+        </div>
+
+        <div class="input-group custom-date-group hidden" id="customEndGroup">
+          <label for="filterEndDate">To Date</label>
+          <input type="date" id="filterEndDate">
+        </div>
+
+        <div class="input-group">
+          <label for="searchInput">Filter Broker / Symbol</label>
+          <input type="text" id="searchInput" placeholder="e.g. 58 or SHIVM">
+        </div>
+
+        <div class="filter-actions" style="align-self: flex-end;">
+          <button id="applyFilterBtn" class="btn btn-primary">Apply Window</button>
+          <button id="resetFilterBtn" class="btn btn-secondary">Reset (5D)</button>
+        </div>
+      </div>
+
+      <!-- Window Metadata Badge -->
+      <div style="margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px;">
+        <span style="font-size: 11px; color: var(--text-muted);" id="windowMetaText">
+          📅 Active Period: <b>5 Trading Sessions</b> (2026-08-25 to 2026-09-01)
+        </span>
+        <span class="badge" style="background: rgba(38, 166, 154, 0.15); color: var(--accent-green); border-color: rgba(38, 166, 154, 0.3);">
+          ⚡ CockroachDB Summary Layer: 100% Reconciled
+        </span>
+      </div>
+    </section>
+
+    <!-- Market Macro KPI Grid -->
+    <section class="kpi-grid">
+      <div class="card kpi-card">
+        <span class="kpi-title">TOTAL PERIOD TURNOVER</span>
+        <span class="kpi-value text-green" id="kpiTurnover">NPR 0.00</span>
+      </div>
+      <div class="card kpi-card">
+        <span class="kpi-title">TOTAL SHARES TRADED</span>
+        <span class="kpi-value" id="kpiQuantity">0</span>
+      </div>
+      <div class="card kpi-card">
+        <span class="kpi-title">PARTICIPATION TRADES</span>
+        <span class="kpi-value text-blue" id="kpiTrades">0</span>
+      </div>
+      <div class="card kpi-card">
+        <span class="kpi-title">ACTIVE STOCKS TRADED</span>
+        <span class="kpi-value text-green" id="kpiActiveScrips">0</span>
+      </div>
+      <div class="card kpi-card">
+        <span class="kpi-title">ACTIVE BROKERS</span>
+        <span class="kpi-value text-blue" id="kpiActiveBrokers">0</span>
+      </div>
+    </section>
+
+    <!-- Matrix Mode Tabs Switcher -->
+    <div style="display: flex; gap: 10px; margin-bottom: 16px;">
+      <button class="btn btn-primary" id="viewBrokersBtn" style="font-size: 12px; padding: 8px 16px;">🏢 Multi-Day Broker Flow Matrix</button>
+      <button class="btn btn-secondary" id="viewScripsBtn" style="font-size: 12px; padding: 8px 16px;">📊 Multi-Day Scrip Accumulation Matrix</button>
+    </div>
+
+    <!-- Section 1: Multi-Day Broker Matrix Table -->
+    <section class="card table-card" id="brokerSection">
+      <div class="table-container" style="max-height: 700px;">
+        <table id="brokerMultiTable">
+          <thead>
+            <tr>
+              <th data-sort="broker_id" class="sortable">Broker <span class="sort-icon"></span></th>
+              <th data-sort="gross_activity" class="sortable text-right sorted-desc">Gross Activity (NPR) <span class="sort-icon">▼</span></th>
+              <th data-sort="buy_amount" class="sortable text-right">Buy Turnover (NPR) <span class="sort-icon"></span></th>
+              <th data-sort="sell_amount" class="sortable text-right">Sell Turnover (NPR) <span class="sort-icon"></span></th>
+              <th data-sort="net_flow_value" class="sortable text-right">Net Flow Value (NPR) <span class="sort-icon"></span></th>
+              <th data-sort="buy_vwap" class="sortable text-right">Buy VWAP <span class="sort-icon"></span></th>
+              <th data-sort="sell_vwap" class="sortable text-right">Sell VWAP <span class="sort-icon"></span></th>
+              <th data-sort="positive_days" class="sortable text-right">Positive Days <span class="sort-icon"></span></th>
+              <th data-sort="buy_persistence_pct" class="sortable text-right">Persistence % <span class="sort-icon"></span></th>
+              <th data-sort="market_share_pct" class="sortable text-right">Market Share % <span class="sort-icon"></span></th>
+              <th class="text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody id="brokerMultiBody">
+            <!-- Rendered Dynamically -->
+          </tbody>
+        </table>
+      </div>
+
+      <div class="pagination-bar">
+        <div class="pagination-info" id="brokerMultiInfo">Showing 0 active brokers</div>
+        <div class="pagination-controls">
+          <span style="font-size: 11px; color: var(--text-muted);">💡 Click <b>[🔍 Deep Dive]</b> or any broker row to inspect multi-day flow trajectory and full portfolio</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Section 2: Multi-Day Scrip Matrix Table (Hidden by Default) -->
+    <section class="card table-card hidden" id="scripSection">
+      <div class="table-container" style="max-height: 700px;">
+        <table id="scripMultiTable">
+          <thead>
+            <tr>
+              <th data-sort="symbol" class="sortable">Symbol <span class="sort-icon"></span></th>
+              <th data-sort="turnover" class="sortable text-right sorted-desc">Turnover (NPR) <span class="sort-icon">▼</span></th>
+              <th data-sort="volume" class="sortable text-right">Volume (Shares) <span class="sort-icon"></span></th>
+              <th data-sort="trades_count" class="sortable text-right">Trades <span class="sort-icon"></span></th>
+              <th data-sort="multi_day_vwap" class="sortable text-right">Multi-Day VWAP (NPR) <span class="sort-icon"></span></th>
+              <th>Top Net Buyer Broker</th>
+              <th>Top Net Seller Broker</th>
+              <th data-sort="top3_concentration_pct" class="sortable text-right">Top 3 Buyer Share % <span class="sort-icon"></span></th>
+              <th data-sort="market_share_pct" class="sortable text-right">Market Share % <span class="sort-icon"></span></th>
+              <th class="text-right">Action</th>
+            </tr>
+          </thead>
+          <tbody id="scripMultiBody">
+            <!-- Rendered Dynamically -->
+          </tbody>
+        </table>
+      </div>
+
+      <div class="pagination-bar">
+        <div class="pagination-info" id="scripMultiInfo">Showing 0 active stocks</div>
+        <div class="pagination-controls">
+          <span style="font-size: 11px; color: var(--text-muted);">💡 Click <b>[🔍 Deep Dive]</b> or any stock row to inspect multi-day broker participation and trajectory</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Loading Overlay -->
+    <div id="loadingOverlay" class="loading-overlay hidden">
+      <div class="spinner"></div>
+      <span>Analyzing Multi-Day Flow Matrix...</span>
+    </div>
+
+  </main>
+
+  <!-- Multi-Day Drilldown Modal / Drawer -->
+  <div id="drawerBackdrop" class="drawer-backdrop hidden">
+    <div class="drawer-modal" style="position: relative; min-height: 550px;">
+      
+      <!-- Drawer Loading Overlay -->
+      <div id="drawerLoadingOverlay" class="loading-overlay hidden" style="border-radius: 8px;">
+        <div class="spinner"></div>
+        <span id="drawerLoadingText">Analyzing Multi-Day Intelligence...</span>
+      </div>
+
+      <!-- Drawer Header -->
+      <div class="drawer-header">
+        <div class="drawer-title-group">
+          <div class="status-dot"></div>
+          <span class="drawer-title" id="drawerTitle">🔄 Multi-Day Intelligence</span>
+          <span class="badge" id="drawerPeriodBadge">5 Trading Sessions</span>
+        </div>
+        <button id="closeDrawerBtn" class="btn-close">✕</button>
+      </div>
+
+      <!-- Executive KPI Summary Row -->
+      <div class="kpi-grid" style="grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));">
+        <div class="card kpi-card" style="padding: 10px 14px;">
+          <span class="kpi-title" id="dKpiTitle1">GROSS ACTIVITY</span>
+          <span class="kpi-value text-green" id="dKpiVal1">NPR 0.00</span>
+        </div>
+        <div class="card kpi-card" style="padding: 10px 14px;">
+          <span class="kpi-title" id="dKpiTitle2">NET FLOW VALUE</span>
+          <span class="kpi-value" id="dKpiVal2" style="font-size: 13px;">NPR 0.00</span>
+        </div>
+        <div class="card kpi-card" style="padding: 10px 14px;">
+          <span class="kpi-title" id="dKpiTitle3">BUY / SELL VWAP</span>
+          <span class="kpi-value text-blue" id="dKpiVal3" style="font-size: 13px;">0.00 / 0.00</span>
+        </div>
+        <div class="card kpi-card" style="padding: 10px 14px;">
+          <span class="kpi-title" id="dKpiTitle4">ACTIVE SCOPE</span>
+          <span class="kpi-value" id="dKpiVal4" style="font-size: 13px;">0 Scrips</span>
+        </div>
+      </div>
+
+      <!-- Daily Flow Trajectory Timeline Chart Container -->
+      <div class="chart-container-box">
+        <div class="chart-header">
+          <span class="chart-title" id="chartTitleText">📈 Day-by-Day Capital Flow Trajectory</span>
+        </div>
+        <div class="chart-wrapper">
+          <canvas id="multiTimelineChart"></canvas>
+        </div>
+      </div>
+
+      <!-- Breakdown Matrix Table -->
+      <div class="card" style="padding: 0; overflow: hidden;">
+        <div style="padding: 12px 16px; border-bottom: 1px solid var(--border-color); display: flex; justify-content: space-between; align-items: center;">
+          <span style="font-size: 12px; font-weight: 700; color: var(--text-bright); text-transform: uppercase;" id="drawerTableTitle">📑 Breakdown Matrix</span>
+          <input type="text" id="drawerFilterInput" placeholder="Filter..." style="padding: 4px 8px; font-size: 11px; width: 160px;">
+        </div>
+        <div class="table-container" style="max-height: 320px;">
+          <table id="drawerBreakdownTable">
+            <thead id="drawerTableHead">
+              <!-- Rendered Dynamically -->
+            </thead>
+            <tbody id="drawerTableBody">
+              <!-- Rendered Dynamically -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="multiday.js"></script>
+</body>
+</html>

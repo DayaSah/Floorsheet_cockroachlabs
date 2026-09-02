@@ -234,7 +234,20 @@ def main():
         cursor.close()
         conn.close()
 
-        # Step E: Master Telegram Summary
+        # Step E: Trigger Multi-Day Summary ETL Sync for Scraped Date Range
+        print(f"\n🔄 Synchronizing Multi-Day Summary for range {target_dates[0]} to {target_dates[-1]}...")
+        summary_sync_status = "Skipped"
+        try:
+            from scripts.daily_summary_etl import rebuild_summary_for_range
+            range_results = rebuild_summary_for_range(target_dates[0], target_dates[-1])
+            all_reconciled = all(r.get("reconciled") for r in range_results)
+            summary_sync_status = f"✅ {len(range_results)} Dates Reconciled" if all_reconciled else "⚠️ Partial Mismatch"
+            print(f"  Multi-Day Summary: {summary_sync_status}")
+        except Exception as sum_err:
+            summary_sync_status = f"⚠️ Warning: {sum_err}"
+            print(f"⚠️ Multi-Day Sync Warning: {sum_err}")
+
+        # Step F: Master Telegram Summary
         elapsed_mins = round((time.time() - start_time) / 60, 2)
         summary_msg = (
             f"🛠️ <b>NEPSE Floorsheet Backfill Complete</b>\n\n"
@@ -243,6 +256,7 @@ def main():
             f"<b>Tasks Scraped:</b> {total_tasks_completed:,}\n"
             f"<b>Tasks Skipped:</b> {total_tasks_skipped:,} (Holidays / Fully Saved)\n"
             f"<b>New Records Stored:</b> {total_records_inserted:,}\n"
+            f"<b>Multi-Day Summary:</b> {summary_sync_status}\n"
             f"<b>Total Execution Time:</b> {elapsed_mins} mins"
         )
         print(summary_msg)

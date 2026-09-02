@@ -157,13 +157,28 @@ def main():
 
         cursor.close()
         conn.close()
+
+        # Step 3: Trigger Multi-Day Summary ETL & Automated Reconciliation
+        print(f"\n🔄 Running Multi-Day Summary ETL & Reconciliation for {today_date}...")
+        etl_status = "Skipped"
+        summary_rows_count = 0
+        try:
+            from scripts.daily_summary_etl import rebuild_summary_for_date
+            etl_result = rebuild_summary_for_date(today_date)
+            summary_rows_count = etl_result.get("summary_rows", 0)
+            etl_status = "✅ 100% Reconciled" if etl_result.get("reconciled") else "⚠️ Mismatch"
+            print(f"  {etl_status} ({summary_rows_count:,} summary rows generated)")
+        except Exception as etl_err:
+            etl_status = f"⚠️ Warning: {etl_err}"
+            print(f"⚠️ Summary ETL Warning: {etl_err}")
         
         elapsed_minutes = round((time.time() - start_time) / 60, 2)
         success_msg = (
-            f"✅ <b>NEPSE Sync Successful</b>\n"
+            f"✅ <b>NEPSE Daily Sync Successful</b>\n"
             f"<b>Date:</b> {today_date}\n"
             f"<b>Total API Items:</b> {total_items:,}\n"
-            f"<b>DB Records Processed:</b> {total_inserted:,}\n"
+            f"<b>Raw Records Saved:</b> {total_inserted:,}\n"
+            f"<b>Multi-Day Summary:</b> {etl_status} ({summary_rows_count:,} rows)\n"
             f"<b>Pages Processed:</b> {page - 1:,} / {total_pages:,}\n"
             f"<b>Execution Time:</b> {elapsed_minutes} mins"
         )

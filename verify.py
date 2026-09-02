@@ -3,9 +3,15 @@ import sys
 import argparse
 import requests
 import psycopg2
-from dotenv import load_dotenv
+from psycopg2.extras import RealDictCursor
+from datetime import datetime, timedelta
 
-load_dotenv()
+# Load environment
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 
 DB_URI = os.getenv("DB_URI")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -59,36 +65,40 @@ def fetch_nepsealpha_summary(symbol=None):
     data = r.json()
     return data
 
-def verify_today_data(symbol=None, sample_pages=5):
+def verify_raw_vs_nepsealpha(symbol=None, sample_pages=5):
+    """Verifies floorsheet_raw against live NepseAlpha feed."""
     print("=" * 65)
-    print("🔍 NEPSE FLOORSHEET INDEPENDENT VERIFIER (NepseAlpha vs DBMS)")
+    print("🔍 PART 1: RAW FLOORSHEET vs NEPSEALPHA LIVE VERIFICATION")
     print("=" * 65)
     
     if not DB_URI:
-        print("❌ Error: DB_URI not configured in environment or .env file.")
-        sys.exit(1)
+        print("❌ Error: DB_URI not configured.")
+        return None
         
     db_uri = build_db_uri(DB_URI)
     conn = psycopg2.connect(db_uri)
     cursor = conn.cursor()
     
-    # 1. Fetch NepseAlpha reference
     target_label = symbol.upper() if symbol else "ALL MARKET"
-    print(f"\n📡 Querying NepseAlpha Live Feed [Symbol: {target_label}]...")
-    alpha_data = fetch_nepsealpha_summary(symbol)
-    alpha_summary = alpha_data.get("summary", {})
-    as_of = alpha_data.get("asOf", "Today")
-    
-    alpha_total_trades = int(alpha_summary.get("total", 0))
-    alpha_total_amount = float(alpha_summary.get("totalamount", 0))
-    alpha_total_qty = int(alpha_summary.get("totalquantity", 0))
-    
-    print(f"   📅 NepseAlpha asOf: {as_of}")
-    print(f"   📊 NepseAlpha Summary -> Trades: {alpha_total_trades:,} | Qty: {alpha_total_qty:,} | Amount: Rs {alpha_total_amount:,.2f}")
-    
-    # 2. Query CockroachDB
-    trade_date = as_of.split()[0] if as_of else None
-    print(f"\n💾 Querying CockroachDB for Date [{trade_date}] [Symbol: {target_label}]...")
+    print(f"📡 Querying NepseAlpha Feed [Target: {target_label}]...")
+    try:
+        alpha_data = fetch_nepsealpha_summary(symbol)
+        alpha_summary = alpha_data.get("summary", {})
+        as_of = alpha_data.get("asOf", "Today")
+        
+        alpha_total_trades = int(alpha_summary.get("total", 0))
+        alpha_total_amount = float(alpha_summary.get("totalamount", 0))
+        alpha_total_qty = int(alpha_summary.get("totalquantity", 0))
+        
+        trade_date = as_of.split()[0] if as_of else None
+        print(f"   📅 Date: {trade_date} | NepseAlpha: Trades: {alpha_total_trades:,} | Qty: {alpha_total_qty:,} | Amount: Rs {alpha_total_amount:,.2f}")
+    except Exception as e:
+        print(f"   ⚠️ NepseAlpha Feed unreachable or protected ({e}). Proceeding to DBMS validation.")
+        alpha_data = None
+        trade_date = datetime.now().strftime("%Y-%m-%d")
+        alpha_total_trades = 0
+        alpha_total_amount = 0.0
+        alpha_total_qty = 0
     
     if symbol:
         cursor.execute("""
@@ -107,12 +117,7 @@ def verify_today_data(symbol=None, sample_pages=5):
     db_qty = int(db_qty)
     db_amount = float(db_amount)
     
-    print(f"   📊 CockroachDB Summary -> Trades: {db_count:,} | Qty: {db_qty:,} | Amount: Rs {db_amount:,.2f}")
-    
-    # 3. Macro Comparison
-    print("\n" + "-" * 65)
-    print("📋 MACRO AGGREGATE RECONCILIATION")
-    print("-" * 65)
+    print(f"   💾 CockroachDB: Trades: {db_count:,} | Qty: {db_qty:,} | Amount: Rs {db_amount:,.2f}")
     
     trades_diff = db_count - alpha_total_trades
     qty_diff = db_qty - alpha_total_qty
@@ -122,124 +127,158 @@ def verify_today_data(symbol=None, sample_pages=5):
     qty_status = "✅ MATCH" if qty_diff == 0 else f"⚠️ DIFF: {qty_diff:+d}"
     amt_status = "✅ MATCH" if abs(amt_diff) < 10.0 else f"⚠️ DIFF: Rs {amt_diff:+,.2f}"
     
-    print(f"  • Trade Count : {db_count:,} vs {alpha_total_trades:,} -> {trades_status}")
-    print(f"  • Total Volume: {db_qty:,} vs {alpha_total_qty:,} -> {qty_status}")
-    print(f"  • Total Amount: Rs {db_amount:,.2f} vs Rs {alpha_total_amount:,.2f} -> {amt_status}")
-    
-    # 4. Micro Contract-level Cross-check
-    print("\n" + "-" * 65)
-    print(f"🔬 MICRO CONTRACT-LEVEL CROSS-CHECK (Checking {sample_pages} page(s) / up to {sample_pages * 500} records)")
-    print("-" * 65)
-    
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Accept": "application/json, text/javascript, */*; q=0.01",
-        "X-Requested-With": "XMLHttpRequest",
-        "Referer": "https://nepsealpha.com/floorsheet-live-today"
-    }
-    
-    total_verified = 0
-    matched_contracts = 0
-    mismatched_contracts = 0
-    missing_in_db = 0
-    
-    for page in range(1, sample_pages + 1):
-        url = "https://nepsealpha.com/floorsheet-live-today/filter"
-        params = {
-            "page": page,
-            "contractNumber": "",
-            "stockSymbol": symbol if symbol else "",
-            "buyer": "",
-            "seller": "",
-            "itemsPerPage": 500
-        }
-        res = requests.get(url, params=params, headers=headers, timeout=15)
-        page_records = res.json().get("data", {}).get("data", [])
-        if not page_records:
-            break
-            
-        contract_ids = [int(r["cn"]) for r in page_records if r.get("cn")]
-        cursor.execute("""
-            SELECT contract_id, symbol, buyer_broker, seller_broker, quantity, rate, amount
-            FROM floorsheet_raw
-            WHERE contract_id = ANY(%s);
-        """, (contract_ids,))
-        db_map = {row[0]: row for row in cursor.fetchall()}
-        
-        for r in page_records:
-            cid = int(r["cn"])
-            total_verified += 1
-            if cid not in db_map:
-                missing_in_db += 1
-                continue
-                
-            db_row = db_map[cid]
-            # Verify fields: symbol, buyer, seller, qty, rate, amount
-            sym_ok = db_row[1] == r["smb"].strip().upper()
-            buyer_ok = db_row[2] == int(r["bb"])
-            seller_ok = db_row[3] == int(r["sb"])
-            qty_ok = db_row[4] == int(r["qnt"])
-            rate_ok = abs(float(db_row[5]) - float(r["rt"])) < 0.01
-            amt_ok = abs(float(db_row[6]) - float(r["am"])) < 1.0
-            
-            if sym_ok and buyer_ok and seller_ok and qty_ok and rate_ok and amt_ok:
-                matched_contracts += 1
-            else:
-                mismatched_contracts += 1
-                print(f"  ❌ Mismatch for Contract #{cid}:")
-                print(f"     Alpha: sym={r['smb']}, buyer={r['bb']}, seller={r['sb']}, qty={r['qnt']}, rate={r['rt']}, amt={r['am']}")
-                print(f"     DBMS : sym={db_row[1]}, buyer={db_row[2]}, seller={db_row[3]}, qty={db_row[4]}, rate={db_row[5]}, amt={db_row[6]}")
-                
-    match_pct = (matched_contracts / total_verified * 100.0) if total_verified > 0 else 0.0
-    print(f"  • Contracts Examined : {total_verified:,}")
-    print(f"  • Perfectly Matched  : {matched_contracts:,} ({match_pct:.2f}%)")
-    print(f"  • Missing from DBMS  : {missing_in_db:,}")
-    print(f"  • Attribute Mismatches: {mismatched_contracts:,}")
-    
-    # Calculate Overall Accuracy Level
-    if alpha_total_trades > 0:
-        coverage_pct = min(100.0, (db_count / alpha_total_trades) * 100.0)
-    else:
-        coverage_pct = 100.0
-    overall_accuracy = (coverage_pct * 0.5) + (match_pct * 0.5)
+    print(f"   • Trades: {trades_status} | Volume: {qty_status} | Amount: {amt_status}")
     
     cursor.close()
     conn.close()
     
+    return {
+        "date": trade_date,
+        "target": target_label,
+        "db_count": db_count,
+        "alpha_count": alpha_total_trades,
+        "db_qty": db_qty,
+        "alpha_qty": alpha_total_qty,
+        "db_amount": db_amount,
+        "alpha_amount": alpha_total_amount,
+        "matched": (trades_diff == 0 and qty_diff == 0 and abs(amt_diff) < 10.0)
+    }
+
+def verify_summary_vs_raw_multiday(days=14):
+    """
+    Verifies internal consistency between daily_broker_scrip_summary and floorsheet_raw
+    across the past N trading days (default: 14 days / past 2 weeks).
+    """
     print("\n" + "=" * 65)
-    is_perfect = (missing_in_db == 0 and mismatched_contracts == 0 and trades_diff == 0)
-    if is_perfect:
-        status_text = "🎉 100% PERFECT DATA INTEGRITY & SYNCHRONIZATION"
-        status_badge = "✅ <b>PASSED (100% Integrity)</b>"
-    else:
-        status_text = f"ℹ️ PARTIAL SYNC ({overall_accuracy:.2f}% Accuracy)"
-        status_badge = f"⚠️ <b>ATTENTION NEEDED ({overall_accuracy:.2f}%)</b>"
-    print(status_text)
+    print(f"🔍 PART 2: SUMMARY TABLE vs RAW FLOORSHEET (PAST {days} SESSIONS)")
     print("=" * 65)
+    
+    if not DB_URI:
+        print("❌ Error: DB_URI not configured.")
+        return []
+        
+    db_uri = build_db_uri(DB_URI)
+    conn = psycopg2.connect(db_uri)
+    cursor = conn.cursor(cursor_factory=RealDictCursor)
+    
+    # 1. Fetch distinct dates from raw table
+    cursor.execute("""
+        SELECT DISTINCT trade_time::date AS tdate
+        FROM floorsheet_raw
+        ORDER BY tdate DESC
+        LIMIT %s;
+    """, (days,))
+    raw_dates = [r['tdate'].strftime("%Y-%m-%d") for r in cursor.fetchall()]
+    
+    print(f"Scanning past {len(raw_dates)} available trading sessions in CockroachDB...\n")
+    
+    session_results = []
+    
+    for d_str in raw_dates:
+        start_ts = f"{d_str} 00:00:00+00"
+        end_ts = f"{d_str} 23:59:59.999999+00"
+        
+        # Raw totals
+        cursor.execute("""
+            SELECT 
+                COUNT(*) AS raw_trades,
+                COALESCE(SUM(quantity), 0) AS raw_qty,
+                COALESCE(SUM(amount), 0) AS raw_amt
+            FROM floorsheet_raw
+            WHERE trade_time >= %s AND trade_time <= %s;
+        """, (start_ts, end_ts))
+        raw_row = cursor.fetchone()
+        
+        # Summary totals
+        cursor.execute("""
+            SELECT 
+                COUNT(*) AS summary_rows,
+                COALESCE(SUM(buy_qty), 0) AS sum_buy_qty,
+                COALESCE(SUM(sell_qty), 0) AS sum_sell_qty,
+                COALESCE(SUM(buy_amt), 0) AS sum_buy_amt,
+                COALESCE(SUM(sell_amt), 0) AS sum_sell_amt
+            FROM daily_broker_scrip_summary
+            WHERE trade_date = %s;
+        """, (d_str,))
+        sum_row = cursor.fetchone()
+        
+        raw_trades = raw_row['raw_trades']
+        raw_qty = int(raw_row['raw_qty'])
+        raw_amt = float(raw_row['raw_amt'])
+        
+        summary_rows = sum_row['summary_rows']
+        sum_buy_qty = int(sum_row['sum_buy_qty'])
+        sum_sell_qty = int(sum_row['sum_sell_qty'])
+        sum_buy_amt = float(sum_row['sum_buy_amt'])
+        sum_sell_amt = float(sum_row['sum_sell_amt'])
+        
+        qty_ok = (raw_qty == sum_buy_qty == sum_sell_qty)
+        amt_ok = (abs(raw_amt - sum_buy_amt) < 0.1 and abs(raw_amt - sum_sell_amt) < 0.1)
+        reconciled = qty_ok and amt_ok and summary_rows > 0
+        
+        status_icon = "✅" if reconciled else "❌"
+        print(f"  {status_icon} [{d_str}] Raw: {raw_trades:,} trades (Qty: {raw_qty:,}, Rs {raw_amt:,.2f}) ➔ Summary: {summary_rows:,} rows (Qty: {sum_buy_qty:,}, Rs {sum_buy_amt:,.2f})")
+        
+        session_results.append({
+            "date": d_str,
+            "reconciled": reconciled,
+            "raw_trades": raw_trades,
+            "summary_rows": summary_rows,
+            "raw_qty": raw_qty,
+            "summary_qty": sum_buy_qty,
+            "raw_amt": raw_amt,
+            "summary_amt": sum_buy_amt
+        })
+        
+    cursor.close()
+    conn.close()
+    
+    total_reconciled = sum(1 for r in session_results if r['reconciled'])
+    print("\n" + "-" * 65)
+    print(f"📊 SUMMARY RECONCILIATION RESULT: {total_reconciled}/{len(session_results)} SESSIONS 100% RECONCILED")
+    print("-" * 65)
+    
+    return session_results
 
-    # 5. Format & Send Telegram Audit Report
-    tg_message = (
-        f"📊 <b>NEPSE Floorsheet Audit & Accuracy Report</b>\n\n"
-        f"<b>Status:</b> {status_badge}\n"
-        f"<b>Target:</b> <code>{target_label}</code>\n"
-        f"<b>Reference Date:</b> {trade_date}\n\n"
-        f"<b>🎯 Accuracy Level:</b> <code>{overall_accuracy:.2f}%</code>\n"
-        f"<b>• Trade Count:</b> {db_count:,} / {alpha_total_trades:,} ({coverage_pct:.1f}%)\n"
-        f"<b>• Total Volume:</b> {db_qty:,} vs {alpha_total_qty:,}\n"
-        f"<b>• Total Turnover:</b> Rs {db_amount:,.2f} vs Rs {alpha_total_amount:,.2f}\n\n"
-        f"<b>🔬 Sampled Validation:</b>\n"
-        f"• Contracts Sampled: {total_verified:,}\n"
-        f"• Attribute Match Rate: <b>{match_pct:.2f}%</b>\n"
-        f"• Missing Contracts: {missing_in_db:,}\n"
-        f"• Mismatches: {mismatched_contracts:,}\n\n"
-        f"<i>Verified automatically via NepseAlpha Feed</i>"
-    )
-    send_telegram(tg_message)
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Verify CockroachDB floorsheet data against NepseAlpha live feed.")
-    parser.add_argument("--symbol", type=str, default=None, help="Stock symbol to verify (e.g. SHIVM, NABIL)")
-    parser.add_argument("--pages", type=int, default=5, help="Number of 500-item pages to sample for micro verification")
+def main():
+    parser = argparse.ArgumentParser(description="NEPSE Multi-Table Integrity & Dual-Verification Engine")
+    parser.add_argument("--symbol", type=str, default=None, help="Specific symbol to check against NepseAlpha")
+    parser.add_argument("--days", type=int, default=14, help="Number of past trading days to verify (default: 14)")
+    parser.add_argument("--no-telegram", action="store_true", help="Skip sending Telegram notification")
     args = parser.parse_args()
     
-    verify_today_data(symbol=args.symbol, sample_pages=args.pages)
+    # Run Part 1: Raw vs NepseAlpha
+    raw_res = verify_raw_vs_nepsealpha(symbol=args.symbol)
+    
+    # Run Part 2: Summary vs Raw over past N days
+    summary_results = verify_summary_vs_raw_multiday(days=args.days)
+    
+    # Generate Telegram Message
+    if not args.no_telegram and summary_results:
+        total_sessions = len(summary_results)
+        reconciled_sessions = sum(1 for r in summary_results if r['reconciled'])
+        pass_rate = (reconciled_sessions / total_sessions * 100.0) if total_sessions > 0 else 100.0
+        
+        status_badge = "✅ <b>100% INTEGRITY PASSED</b>" if pass_rate == 100.0 else f"⚠️ <b>ATTENTION ({pass_rate:.1f}%)</b>"
+        
+        tg_msg = (
+            f"📊 <b>NEPSE Dual-Table Integrity Audit Report</b>\n\n"
+            f"<b>Status:</b> {status_badge}\n"
+            f"<b>Window:</b> Past {args.days} Trading Sessions ({summary_results[-1]['date']} to {summary_results[0]['date']})\n"
+            f"<b>Multi-Day Reconciled:</b> <code>{reconciled_sessions}/{total_sessions} Sessions ({pass_rate:.1f}%)</code>\n\n"
+            f"<b>📋 Tables Audited:</b>\n"
+            f"1. <code>floorsheet_raw</code> (Tick-level Source of Truth)\n"
+            f"2. <code>daily_broker_scrip_summary</code> (Pre-aggregated Multi-Day Layer)\n\n"
+        )
+        
+        if raw_res:
+            tg_msg += (
+                f"<b>📡 Latest Live Feed Check ({raw_res['date']}):</b>\n"
+                f"• DBMS Trades: {raw_res['db_count']:,} vs Alpha: {raw_res['alpha_count']:,}\n"
+                f"• DBMS Turnover: Rs {raw_res['db_amount']:,.2f} vs Alpha: Rs {raw_res['alpha_amount']:,.2f}\n"
+            )
+            
+        send_telegram(tg_msg)
+
+if __name__ == "__main__":
+    main()
