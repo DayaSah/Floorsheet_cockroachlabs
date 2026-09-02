@@ -106,18 +106,21 @@ def verify_raw_vs_nepsealpha(symbol=None, sample_pages=5):
         alpha_total_amount = 0.0
         alpha_total_qty = 0
     
+    start_ts = f"{trade_date} 00:00:00+00"
+    end_ts = f"{trade_date} 23:59:59.999999+00"
+
     if symbol:
         cursor.execute("""
             SELECT COUNT(*), COALESCE(SUM(quantity), 0), COALESCE(SUM(amount), 0)
             FROM floorsheet_raw
-            WHERE trade_time::date = %s AND symbol = %s;
-        """, (trade_date, symbol.upper()))
+            WHERE trade_time >= %s AND trade_time <= %s AND symbol = %s;
+        """, (start_ts, end_ts, symbol.upper()))
     else:
         cursor.execute("""
             SELECT COUNT(*), COALESCE(SUM(quantity), 0), COALESCE(SUM(amount), 0)
             FROM floorsheet_raw
-            WHERE trade_time::date = %s;
-        """, (trade_date,))
+            WHERE trade_time >= %s AND trade_time <= %s;
+        """, (start_ts, end_ts))
         
     db_count, db_qty, db_amount = cursor.fetchone()
     db_qty = int(db_qty)
@@ -167,10 +170,10 @@ def verify_summary_vs_raw_multiday(days=14):
     conn = psycopg2.connect(db_uri)
     cursor = conn.cursor(cursor_factory=RealDictCursor)
     
-    # 1. Fetch distinct dates from raw table
+    # 1. Fetch distinct dates efficiently from summary layer
     cursor.execute("""
-        SELECT DISTINCT trade_time::date AS tdate
-        FROM floorsheet_raw
+        SELECT DISTINCT trade_date AS tdate
+        FROM daily_broker_scrip_summary
         ORDER BY tdate DESC
         LIMIT %s;
     """, (days,))

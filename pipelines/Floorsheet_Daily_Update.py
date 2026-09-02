@@ -95,6 +95,7 @@ def main():
         page_size = 100
         total_inserted = 0
         empty_retries = 0
+        batch_buffer = []
 
         while page <= total_pages:
             params = {
@@ -125,13 +126,12 @@ def main():
             
             empty_retries = 0  # Reset retry counter on successful page
 
-            batch_data = []
             for r in records:
                 try:
                     contract_id = int(r["contractId"])
                     if contract_id <= 0:
                         continue
-                    batch_data.append((
+                    batch_buffer.append((
                         contract_id,
                         str(r["symbol"]).strip().upper(),
                         int(r["buyerMemberId"]),
@@ -144,7 +144,8 @@ def main():
                 except (KeyError, ValueError, TypeError):
                     continue
 
-            if batch_data:
+            # Flush in scaled chunks of 2,000 rows (95% fewer distributed SQL transactions)
+            if len(batch_buffer) >= 2000:
                 insert_query = """
                 INSERT INTO floorsheet_raw 
                 (contract_id, symbol, buyer_broker, seller_broker, quantity, rate, amount, trade_time)
@@ -154,15 +155,32 @@ def main():
                     rate = EXCLUDED.rate,
                     amount = EXCLUDED.amount;
                 """
-                execute_values(cursor, insert_query, batch_data)
+                execute_values(cursor, insert_query, batch_buffer)
                 conn.commit()
-                total_inserted += len(batch_data)
+                total_inserted += len(batch_buffer)
+                batch_buffer = []
 
             if page % 50 == 0 or page == total_pages:
                 print(f"  ✅ Progress: page {page}/{total_pages} | Records inserted: {total_inserted:,}")
 
             page += 1
             time.sleep(random.uniform(0.15, 0.35))
+
+        # Flush any remaining buffered records
+        if batch_buffer:
+            insert_query = """
+            INSERT INTO floorsheet_raw 
+            (contract_id, symbol, buyer_broker, seller_broker, quantity, rate, amount, trade_time)
+            VALUES %s
+            ON CONFLICT (contract_id) DO UPDATE SET
+                symbol = EXCLUDED.symbol,
+                rate = EXCLUDED.rate,
+                amount = EXCLUDED.amount;
+            """
+            execute_values(cursor, insert_query, batch_buffer)
+            conn.commit()
+            total_inserted += len(batch_buffer)
+            batch_buffer = []
 
         cursor.close()
         conn.close()

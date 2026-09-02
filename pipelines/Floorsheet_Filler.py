@@ -137,16 +137,18 @@ def main():
             for symbol in target_symbols:
                 sym_label = symbol if symbol else "ALL"
                 
-                # Step A: Query DB count for Verification Check
+                # Step A: Query DB count using high-performance indexed bounds
+                start_ts = f"{current_date} 00:00:00+00"
+                end_ts = f"{current_date} 23:59:59.999999+00"
                 if symbol:
                     cursor.execute(
-                        "SELECT COUNT(*) FROM floorsheet_raw WHERE trade_time::date = %s AND symbol = %s;",
-                        (current_date, symbol)
+                        "SELECT COUNT(*) FROM floorsheet_raw WHERE trade_time >= %s AND trade_time <= %s AND symbol = %s;",
+                        (start_ts, end_ts, symbol)
                     )
                 else:
                     cursor.execute(
-                        "SELECT COUNT(*) FROM floorsheet_raw WHERE trade_time::date = %s;",
-                        (current_date,)
+                        "SELECT COUNT(*) FROM floorsheet_raw WHERE trade_time >= %s AND trade_time <= %s;",
+                        (start_ts, end_ts)
                     )
                 db_count = cursor.fetchone()[0]
 
@@ -177,10 +179,11 @@ def main():
 
                 print(f"📥 {current_date} [{sym_label}]: Scraping needed. (DB: {db_count} / API: {total_items})...")
 
-                # Step D: Pagination Loop
+                # Step D: Pagination Loop with Scaled Chunking
                 page = 1
                 page_size = 100
                 date_inserted_count = 0
+                batch_buffer = []
 
                 while page <= total_pages:
                     params = {"size": page_size, "page": page, "date": current_date}
@@ -196,13 +199,12 @@ def main():
                     if not records:
                         break
 
-                    batch_data = []
                     for r in records:
                         try:
                             contract_id = int(r["contractId"])
                             if contract_id <= 0:
                                 continue
-                            batch_data.append((
+                            batch_buffer.append((
                                 contract_id,
                                 str(r["symbol"]).strip().upper(),
                                 int(r["buyerMemberId"]),
@@ -215,7 +217,8 @@ def main():
                         except (KeyError, ValueError, TypeError):
                             continue
 
-                    if batch_data:
+                    # Flush in chunks of 2,000 rows (95% fewer transactions)
+                    if len(batch_buffer) >= 2000:
                         insert_query = """
                         INSERT INTO floorsheet_raw 
                         (contract_id, symbol, buyer_broker, seller_broker, quantity, rate, amount, trade_time)
@@ -225,15 +228,31 @@ def main():
                             rate = EXCLUDED.rate,
                             amount = EXCLUDED.amount;
                         """
-                        execute_values(cursor, insert_query, batch_data)
+                        execute_values(cursor, insert_query, batch_buffer)
                         conn.commit()
-                        date_inserted_count += len(batch_data)
+                        date_inserted_count += len(batch_buffer)
+                        batch_buffer = []
 
                     if len(records) < page_size:
                         break
 
                     page += 1
                     time.sleep(random.uniform(0.15, 0.35))
+
+                if batch_buffer:
+                    insert_query = """
+                    INSERT INTO floorsheet_raw 
+                    (contract_id, symbol, buyer_broker, seller_broker, quantity, rate, amount, trade_time)
+                    VALUES %s
+                    ON CONFLICT (contract_id) DO UPDATE SET
+                        symbol = EXCLUDED.symbol,
+                        rate = EXCLUDED.rate,
+                        amount = EXCLUDED.amount;
+                    """
+                    execute_values(cursor, insert_query, batch_buffer)
+                    conn.commit()
+                    date_inserted_count += len(batch_buffer)
+                    batch_buffer = []
 
                 total_records_inserted += date_inserted_count
                 total_tasks_completed += 1

@@ -1,7 +1,7 @@
 import os
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from fastapi import FastAPI, APIRouter, Query, HTTPException
+from fastapi import FastAPI, APIRouter, Query, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, date
 
@@ -39,9 +39,18 @@ def get_db_connection():
     if "sslmode=verify-full" in uri:
         uri = uri.replace("sslmode=verify-full", "sslmode=require")
     try:
-        return psycopg2.connect(uri, cursor_factory=RealDictCursor)
+        conn = psycopg2.connect(uri, cursor_factory=RealDictCursor)
+        conn.autocommit = True
+        return conn
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database connection error: {str(e)}")
+
+def apply_cache_headers(response: Response, is_historical: bool = True):
+    """Applies Vercel CDN and browser cache headers."""
+    if is_historical:
+        response.headers["Cache-Control"] = "public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800"
+    else:
+        response.headers["Cache-Control"] = "public, max-age=60, s-maxage=60"
 
 def get_trading_dates(conn):
     """Fetch distinct available trading dates from daily summary layer in desc order."""
@@ -82,8 +91,9 @@ def resolve_date_window(preset: str, start_date: str = None, end_date: str = Non
         return selected_dates[-1], selected_dates[0], len(selected_dates), selected_dates
 
 @router.get("/dates")
-def get_multiday_dates():
+def get_multiday_dates(response: Response):
     """Returns available trading dates and session statistics."""
+    apply_cache_headers(response, is_historical=False)
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -117,12 +127,14 @@ def get_multiday_dates():
 
 @router.get("/overview")
 def get_multiday_overview(
+    response: Response,
     preset: str = Query("5D", description="Date preset: 3D, 5D, 10D, 20D, custom"),
     start_date: str = Query(None, description="Start date YYYY-MM-DD for custom preset"),
     end_date: str = Query(None, description="End date YYYY-MM-DD for custom preset"),
     min_turnover: float = Query(0.0, description="Min stock turnover filter in NPR"),
     limit: int = Query(100, ge=10, le=500, description="Max records returned")
 ):
+    apply_cache_headers(response, is_historical=True)
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -352,10 +364,12 @@ def get_multiday_overview(
 @router.get("/broker/{broker_id}")
 def get_multiday_broker_detail(
     broker_id: int,
+    response: Response,
     preset: str = Query("5D", description="Date preset: 3D, 5D, 10D, 20D, custom"),
     start_date: str = Query(None, description="Start date YYYY-MM-DD for custom preset"),
     end_date: str = Query(None, description="End date YYYY-MM-DD for custom preset")
 ):
+    apply_cache_headers(response, is_historical=True)
     conn = get_db_connection()
     cur = conn.cursor()
     try:
@@ -486,10 +500,12 @@ def get_multiday_broker_detail(
 @router.get("/scrip/{symbol}")
 def get_multiday_scrip_detail(
     symbol: str,
+    response: Response,
     preset: str = Query("5D", description="Date preset: 3D, 5D, 10D, 20D, custom"),
     start_date: str = Query(None, description="Start date YYYY-MM-DD for custom preset"),
     end_date: str = Query(None, description="End date YYYY-MM-DD for custom preset")
 ):
+    apply_cache_headers(response, is_historical=True)
     conn = get_db_connection()
     cur = conn.cursor()
     try:

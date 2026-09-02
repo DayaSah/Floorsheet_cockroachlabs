@@ -1,9 +1,11 @@
 import os
 import math
 import psycopg2
+from datetime import datetime
 from psycopg2.extras import RealDictCursor
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -34,8 +36,12 @@ def get_db_connection():
     """Establishes connection to CockroachDB."""
     if not DB_URI:
         raise HTTPException(status_code=500, detail="DB_URI environment variable missing.")
+    uri = DB_URI
+    if "sslmode=verify-full" in uri:
+        uri = uri.replace("sslmode=verify-full", "sslmode=require")
     try:
-        conn = psycopg2.connect(DB_URI, cursor_factory=RealDictCursor)
+        conn = psycopg2.connect(uri, cursor_factory=RealDictCursor)
+        conn.autocommit = True
         return conn
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database connection error: {str(e)}")
@@ -52,8 +58,17 @@ ALLOWED_SORT_FIELDS = {
     "amount": "amount"
 }
 
+def apply_cache_headers(response: Response, date_str: str = None):
+    """Applies Vercel CDN and browser cache headers. Historical dates cached 24h."""
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if date_str and date_str < today_str:
+        response.headers["Cache-Control"] = "public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800"
+    else:
+        response.headers["Cache-Control"] = "public, max-age=60, s-maxage=60"
+
 @app.get("/api/floorsheet")
 def get_floorsheet(
+    response: Response,
     date: str = Query(..., description="Date format YYYY-MM-DD"),
     symbol: str = Query(None, description="Stock Symbol, e.g., NABIL"),
     buyer: int = Query(None, description="Buyer Broker Number"),
@@ -63,6 +78,8 @@ def get_floorsheet(
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=10, le=500)
 ):
+    apply_cache_headers(response, date)
+
     conn = get_db_connection()
     cursor = conn.cursor()
 
@@ -70,9 +87,11 @@ def get_floorsheet(
     sort_column = ALLOWED_SORT_FIELDS.get(sort_by, "trade_time")
     sort_order = "ASC" if order.lower() == "asc" else "DESC"
 
-    # Dynamic SQL WHERE construction
-    where_clauses = ["trade_time::date = %s"]
-    params = [date]
+    # High-Performance Indexed Timestamp Bounds (Uses idx_trade_time index)
+    start_ts = f"{date} 00:00:00+00"
+    end_ts = f"{date} 23:59:59.999999+00"
+    where_clauses = ["trade_time >= %s", "trade_time <= %s"]
+    params = [start_ts, end_ts]
 
     if symbol:
         where_clauses.append("symbol = %s")
@@ -104,7 +123,7 @@ def get_floorsheet(
         total_pages = math.ceil(total_trades / limit) if total_trades > 0 else 1
         offset = (page - 1) * limit
 
-        # 2. Fetch Paginated Records
+        # 2. Fetch Paginated Records using covering index
         records_query = f"""
             SELECT 
                 contract_id,
@@ -148,23 +167,30 @@ def get_floorsheet(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/symbols")
-def get_symbols(date: str = Query(None)):
-    """Fetch distinct symbols for dropdown autocomplete."""
+def get_symbols(response: Response, date: str = Query(None)):
+    """Fetch distinct symbols efficiently using summary layer when date is provided."""
+    apply_cache_headers(response, date)
     conn = get_db_connection()
     cursor = conn.cursor()
     
-    query = "SELECT DISTINCT symbol FROM floorsheet_raw"
-    params = []
-    
-    if date:
-        query += " WHERE trade_time::date = %s"
-        params.append(date)
-        
-    query += " ORDER BY symbol ASC;"
-    
-    cursor.execute(query, params)
-    rows = cursor.fetchall()
-    cursor.close()
-    conn.close()
-    
-    return [r["symbol"] for r in rows]
+    try:
+        if date:
+            # Query the pre-aggregated summary layer (97% fewer rows)
+            cursor.execute("""
+                SELECT DISTINCT symbol 
+                FROM daily_broker_scrip_summary 
+                WHERE trade_date = %s 
+                ORDER BY symbol ASC;
+            """, (date,))
+        else:
+            cursor.execute("""
+                SELECT DISTINCT symbol 
+                FROM daily_broker_scrip_summary 
+                ORDER BY symbol ASC;
+            """)
+            
+        rows = cursor.fetchall()
+        return [r["symbol"] for r in rows]
+    finally:
+        cursor.close()
+        conn.close()

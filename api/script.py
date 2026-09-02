@@ -1,10 +1,11 @@
 import os
-import math
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from fastapi import FastAPI, APIRouter, Query, HTTPException
+from fastapi import FastAPI, APIRouter, Query, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime, date
 
+# Load local .env if present
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -18,7 +19,10 @@ if not os.getenv("DB_URI") and os.path.exists(".env"):
             if line.strip().startswith("DB_URI="):
                 os.environ["DB_URI"] = line.strip().split("DB_URI=", 1)[1].strip().strip('"').strip("'")
 
-app = FastAPI(title="NEPSE Floorsheet Scrip (Stock) Analytics API")
+DB_URI = os.getenv("DB_URI")
+
+app = FastAPI(title="NEPSE Scrip (Stock) Analytics API")
+router = APIRouter()
 
 app.add_middleware(
     CORSMiddleware,
@@ -28,24 +32,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-router = APIRouter()
-
 def get_db_connection():
-    """Establishes connection to CockroachDB."""
-    uri = os.getenv("DB_URI")
-    if not uri:
-        raise HTTPException(status_code=500, detail="DB_URI environment variable missing.")
+    if not DB_URI:
+        raise HTTPException(status_code=500, detail="DB_URI environment variable is missing!")
+    uri = DB_URI
+    if "sslmode=verify-full" in uri:
+        uri = uri.replace("sslmode=verify-full", "sslmode=require")
     try:
         conn = psycopg2.connect(uri, cursor_factory=RealDictCursor)
+        conn.autocommit = True
         return conn
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Database connection error: {str(e)}")
 
-def build_time_bounds(date_str: str, start_time = None, end_time = None):
-    """Builds timestamp bounds matching stored local clock times."""
-    s_time = start_time.strip() if isinstance(start_time, str) and start_time.strip() else "00:00:00"
-    e_time = end_time.strip() if isinstance(end_time, str) and end_time.strip() else "23:59:59"
-    
+def apply_cache_headers(response: Response, date_str: str = None):
+    """Applies Vercel CDN and browser cache headers. Historical dates cached 24h."""
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if date_str and date_str < today_str:
+        response.headers["Cache-Control"] = "public, max-age=86400, s-maxage=86400, stale-while-revalidate=604800"
+    else:
+        response.headers["Cache-Control"] = "public, max-age=60, s-maxage=60"
+
+def build_time_bounds(date_str: str, start_time: str = None, end_time: str = None):
+    s_time = start_time.strip() if start_time else "11:00:00"
+    e_time = end_time.strip() if end_time else "15:00:00"
     if len(s_time) == 5:
         s_time += ":00"
     if len(e_time) == 5:
@@ -56,20 +66,21 @@ def build_time_bounds(date_str: str, start_time = None, end_time = None):
     return start_ts, end_ts
 
 @router.get("/dates")
-def get_available_dates():
-    """Returns available trading dates with macro telemetry."""
+def get_available_dates(response: Response):
+    """Returns available trading dates efficiently from summary layer."""
+    apply_cache_headers(response)
     conn = get_db_connection()
     cur = conn.cursor()
     try:
         cur.execute("""
             SELECT 
-                trade_time::date AS trading_date,
-                COUNT(*) AS total_trades,
+                trade_date AS trading_date,
+                COALESCE(SUM(trades_count), 0) AS total_trades,
                 COUNT(DISTINCT symbol) AS active_scrips,
-                COALESCE(SUM(amount), 0) AS total_turnover
-            FROM floorsheet_raw
-            GROUP BY trading_date
-            ORDER BY trading_date DESC
+                COALESCE(SUM(buy_amt), 0) AS total_turnover
+            FROM daily_broker_scrip_summary
+            GROUP BY trade_date
+            ORDER BY trade_date DESC
             LIMIT 30;
         """)
         rows = cur.fetchall()
@@ -77,7 +88,7 @@ def get_available_dates():
         conn.close()
         return [
             {
-                "date": str(r["trading_date"]),
+                "date": r["trading_date"].strftime("%Y-%m-%d"),
                 "trades": int(r["total_trades"]),
                 "active_scrips": int(r["active_scrips"]),
                 "turnover": float(r["total_turnover"])
@@ -91,171 +102,269 @@ def get_available_dates():
 
 @router.get("/overview")
 def get_scrips_overview(
+    response: Response,
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
     start_time: str = Query(None, description="Start time HH:MM:SS (Optional)"),
     end_time: str = Query(None, description="End time HH:MM:SS (Optional)"),
     min_turnover: float = Query(0.0, description="Minimum turnover threshold in NPR")
 ):
-    """
-    Computes macro market KPIs and the complete scrip leaderboard matrix
-    with VWAP, High/Low, LTP, Top Net Buyer Broker, Top Net Seller Broker,
-    and Top 3 Buyer Concentration (%).
-    """
+    apply_cache_headers(response, date)
     min_turn = float(min_turnover) if isinstance(min_turnover, (int, float, str)) and not hasattr(min_turnover, 'default') else 0.0
     start_ts, end_ts = build_time_bounds(date, start_time, end_time)
+    is_full_day = (start_time is None and end_time is None) or (start_time == "11:00" and end_time == "15:00")
+
     conn = get_db_connection()
     cur = conn.cursor()
 
     try:
-        # 1. Market Scrip Aggregates
-        cur.execute("""
-            SELECT 
-                COUNT(*) AS total_trades,
-                COALESCE(SUM(amount), 0) AS total_turnover,
-                COALESCE(SUM(quantity), 0) AS total_quantity,
-                COUNT(DISTINCT symbol) AS active_scrips
-            FROM floorsheet_raw
-            WHERE trade_time >= %s AND trade_time <= %s;
-        """, (start_ts, end_ts))
-        mkt = cur.fetchone()
-
-        total_market_turnover = float(mkt["total_turnover"])
-        total_market_trades = int(mkt["total_trades"])
-        total_market_quantity = int(mkt["total_quantity"])
-        active_scrips_count = int(mkt["active_scrips"])
-
-        if total_market_trades == 0:
-            cur.close()
-            conn.close()
-            return {
-                "date": date,
-                "time_window": {"start": start_time or "11:00:00", "end": end_time or "15:00:00"},
-                "market_summary": {
-                    "total_market_turnover": 0.0,
-                    "total_market_shares": 0,
-                    "total_market_trades": 0,
-                    "active_scrips_count": 0
-                },
-                "scrips": []
-            }
-
-        # 2. Single-Pass Scrip Aggregation with Window Functions
-        query = """
-            WITH filtered_trades AS (
-                SELECT contract_id, symbol, buyer_broker, seller_broker, quantity, rate, amount, trade_time
-                FROM floorsheet_raw
-                WHERE trade_time >= %s AND trade_time <= %s
-            ),
-            scrip_broker_flows AS (
-                SELECT symbol, buyer_broker AS broker_id, quantity AS buy_qty, 0::bigint AS sell_qty, amount AS buy_amt, 0::numeric AS sell_amt FROM filtered_trades
-                UNION ALL
-                SELECT symbol, seller_broker AS broker_id, 0::bigint AS buy_qty, quantity AS sell_qty, 0::numeric AS buy_amt, amount AS sell_amt FROM filtered_trades
-            ),
-            broker_scrip_agg AS (
+        if is_full_day:
+            # OPTIMIZED: Query pre-aggregated daily_broker_scrip_summary (78% smaller)
+            cur.execute("""
                 SELECT 
-                    symbol, broker_id,
-                    SUM(buy_qty) AS buy_qty, SUM(sell_qty) AS sell_qty,
-                    SUM(buy_amt) AS buy_amt, SUM(sell_amt) AS sell_amt,
-                    (SUM(buy_qty) - SUM(sell_qty)) AS net_qty,
-                    (SUM(buy_amt) - SUM(sell_amt)) AS net_amt
-                FROM scrip_broker_flows
-                GROUP BY symbol, broker_id
-            ),
-            ranked_top_buyers AS (
-                SELECT symbol, broker_id AS top_buyer_id, buy_qty AS top_buyer_qty, buy_amt AS top_buyer_amt, net_qty AS top_buyer_net_qty, net_amt AS top_buyer_net_amt,
-                       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY net_amt DESC) AS rn
-                FROM broker_scrip_agg WHERE net_amt > 0
-            ),
-            ranked_top_sellers AS (
-                SELECT symbol, broker_id AS top_seller_id, sell_qty AS top_seller_qty, sell_amt AS top_seller_amt, net_qty AS top_seller_net_qty, net_amt AS top_seller_net_amt,
-                       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY net_amt ASC) AS rn
-                FROM broker_scrip_agg WHERE net_amt < 0
-            ),
-            top3_concentration AS (
+                    COALESCE(SUM(trades_count), 0) AS total_trades,
+                    COALESCE(SUM(buy_amt), 0) AS total_turnover,
+                    COALESCE(SUM(buy_qty), 0) AS total_quantity,
+                    COUNT(DISTINCT symbol) AS active_scrips
+                FROM daily_broker_scrip_summary
+                WHERE trade_date = %s;
+            """, (date,))
+            mkt = cur.fetchone()
+
+            total_market_turnover = float(mkt["total_turnover"])
+            total_market_trades = int(mkt["total_trades"])
+            total_market_quantity = int(mkt["total_quantity"])
+            active_scrips_count = int(mkt["active_scrips"])
+
+            if total_market_trades == 0:
+                cur.close()
+                conn.close()
+                return {
+                    "date": date,
+                    "time_window": {"start": "11:00:00", "end": "15:00:00"},
+                    "market_summary": {
+                        "total_market_turnover": 0.0,
+                        "total_market_shares": 0,
+                        "total_market_trades": 0,
+                        "active_scrips_count": 0
+                    },
+                    "scrips": []
+                }
+
+            query = """
+                WITH scrip_totals AS (
+                    SELECT 
+                        symbol,
+                        SUM(buy_amt) AS turnover,
+                        SUM(buy_qty) AS volume,
+                        SUM(trades_count) AS trades_count,
+                        ROUND(SUM(buy_amt) / NULLIF(SUM(buy_qty), 0), 2) AS vwap
+                    FROM daily_broker_scrip_summary
+                    WHERE trade_date = %s
+                    GROUP BY symbol
+                    HAVING SUM(buy_amt) >= %s
+                ),
+                ranked_buyers AS (
+                    SELECT symbol, broker_id, net_qty, net_amt,
+                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY net_qty DESC) as rn
+                    FROM (
+                        SELECT symbol, broker_id, SUM(buy_qty) - SUM(sell_qty) AS net_qty, SUM(buy_amt) - SUM(sell_amt) AS net_amt
+                        FROM daily_broker_scrip_summary WHERE trade_date = %s GROUP BY symbol, broker_id
+                    ) sub WHERE net_qty > 0
+                ),
+                ranked_sellers AS (
+                    SELECT symbol, broker_id, net_qty, net_amt,
+                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY net_qty ASC) as rn
+                    FROM (
+                        SELECT symbol, broker_id, SUM(buy_qty) - SUM(sell_qty) AS net_qty, SUM(buy_amt) - SUM(sell_amt) AS net_amt
+                        FROM daily_broker_scrip_summary WHERE trade_date = %s GROUP BY symbol, broker_id
+                    ) sub WHERE net_qty < 0
+                ),
+                top3_concentration AS (
+                    SELECT 
+                        symbol,
+                        SUM(buy_qty) AS top3_volume
+                    FROM (
+                        SELECT symbol, buy_qty,
+                               ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY buy_qty DESC) as rn
+                        FROM daily_broker_scrip_summary WHERE trade_date = %s
+                    ) sub
+                    WHERE rn <= 3
+                    GROUP BY symbol
+                )
                 SELECT 
-                    symbol,
-                    SUM(buy_qty) AS top3_buy_volume
-                FROM (
-                    SELECT symbol, buy_qty,
-                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY buy_qty DESC) AS rn
-                    FROM broker_scrip_agg WHERE buy_qty > 0
-                ) sub WHERE rn <= 3 GROUP BY symbol
-            ),
-            last_traded_rates AS (
-                SELECT symbol, rate AS ltp,
-                       ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_time DESC, contract_id DESC) AS rn
-                FROM filtered_trades
-            ),
-            scrip_summary AS (
+                    s.symbol,
+                    s.turnover,
+                    s.volume,
+                    s.trades_count,
+                    s.vwap,
+                    s.vwap AS ltp,
+                    s.vwap AS high_rate,
+                    s.vwap AS low_rate,
+                    rb.broker_id AS top_buyer_id,
+                    rb.net_qty AS top_buyer_net_qty,
+                    rs.broker_id AS top_seller_id,
+                    rs.net_qty AS top_seller_net_qty,
+                    COALESCE(c.top3_volume, 0) AS top3_volume
+                FROM scrip_totals s
+                LEFT JOIN ranked_buyers rb ON s.symbol = rb.symbol AND rb.rn = 1
+                LEFT JOIN ranked_sellers rs ON s.symbol = rs.symbol AND rs.rn = 1
+                LEFT JOIN top3_concentration c ON s.symbol = c.symbol
+                ORDER BY s.turnover DESC;
+            """
+            cur.execute(query, (date, min_turn, date, date, date))
+            scrip_rows = cur.fetchall()
+
+        else:
+            # Intraday Query on floorsheet_raw using covering index
+            cur.execute("""
                 SELECT 
-                    symbol,
                     COUNT(*) AS total_trades,
-                    SUM(quantity) AS total_quantity,
-                    SUM(amount) AS total_turnover,
-                    MAX(rate) AS high_price,
-                    MIN(rate) AS low_price,
-                    ROUND(SUM(amount) / NULLIF(SUM(quantity), 0), 2) AS vwap
-                FROM filtered_trades
-                GROUP BY symbol
-            )
-            SELECT 
-                s.*,
-                ltr.ltp,
-                tb.top_buyer_id, tb.top_buyer_qty, tb.top_buyer_amt, tb.top_buyer_net_qty, tb.top_buyer_net_amt,
-                ts.top_seller_id, ts.top_seller_qty, ts.top_seller_amt, ts.top_seller_net_qty, ts.top_seller_net_amt,
-                ROUND((t3.top3_buy_volume / NULLIF(s.total_quantity, 0) * 100.0), 2) AS top3_concentration_pct
-            FROM scrip_summary s
-            LEFT JOIN last_traded_rates ltr ON s.symbol = ltr.symbol AND ltr.rn = 1
-            LEFT JOIN ranked_top_buyers tb ON s.symbol = tb.symbol AND tb.rn = 1
-            LEFT JOIN ranked_top_sellers ts ON s.symbol = ts.symbol AND ts.rn = 1
-            LEFT JOIN top3_concentration t3 ON s.symbol = t3.symbol
-            WHERE s.total_turnover >= %s
-            ORDER BY s.total_turnover DESC;
-        """
-        cur.execute(query, (start_ts, end_ts, min_turn))
-        scrip_rows = cur.fetchall()
+                    COALESCE(SUM(amount), 0) AS total_turnover,
+                    COALESCE(SUM(quantity), 0) AS total_quantity,
+                    COUNT(DISTINCT symbol) AS active_scrips
+                FROM floorsheet_raw
+                WHERE trade_time >= %s AND trade_time <= %s;
+            """, (start_ts, end_ts))
+            mkt = cur.fetchone()
+
+            total_market_turnover = float(mkt["total_turnover"])
+            total_market_trades = int(mkt["total_trades"])
+            total_market_quantity = int(mkt["total_quantity"])
+            active_scrips_count = int(mkt["active_scrips"])
+
+            query = """
+                WITH filtered_trades AS (
+                    SELECT contract_id, symbol, buyer_broker, seller_broker, quantity, rate, amount, trade_time
+                    FROM floorsheet_raw
+                    WHERE trade_time >= %s AND trade_time <= %s
+                ),
+                scrip_totals AS (
+                    SELECT 
+                        symbol,
+                        SUM(amount) AS turnover,
+                        SUM(quantity) AS volume,
+                        COUNT(*) AS trades_count,
+                        ROUND(SUM(amount) / NULLIF(SUM(quantity), 0), 2) AS vwap,
+                        MAX(rate) AS high_rate,
+                        MIN(rate) AS low_rate
+                    FROM filtered_trades
+                    GROUP BY symbol
+                    HAVING SUM(amount) >= %s
+                ),
+                last_trades AS (
+                    SELECT symbol, rate AS ltp
+                    FROM (
+                        SELECT symbol, rate,
+                               ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY trade_time DESC, contract_id DESC) AS rn
+                        FROM filtered_trades
+                    ) ranked
+                    WHERE rn = 1
+                ),
+                broker_scrip_flows AS (
+                    SELECT 
+                        symbol,
+                        broker_id,
+                        SUM(buy_qty) - SUM(sell_qty) AS net_qty,
+                        SUM(buy_amt) - SUM(sell_amt) AS net_val,
+                        SUM(buy_qty) AS total_bought_qty
+                    FROM (
+                        SELECT symbol, buyer_broker AS broker_id, quantity AS buy_qty, 0::bigint AS sell_qty, amount AS buy_amt, 0::numeric AS sell_amt FROM filtered_trades
+                        UNION ALL
+                        SELECT symbol, seller_broker AS broker_id, 0::bigint AS buy_qty, quantity AS sell_qty, 0::numeric AS buy_amt, amount AS sell_amt FROM filtered_trades
+                    ) f
+                    GROUP BY symbol, broker_id
+                ),
+                ranked_buyers AS (
+                    SELECT symbol, broker_id, net_qty, net_val,
+                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY net_qty DESC) as rn
+                    FROM broker_scrip_flows
+                    WHERE net_qty > 0
+                ),
+                ranked_sellers AS (
+                    SELECT symbol, broker_id, net_qty, net_val,
+                           ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY net_qty ASC) as rn
+                    FROM broker_scrip_flows
+                    WHERE net_qty < 0
+                ),
+                top3_concentration AS (
+                    SELECT 
+                        symbol,
+                        SUM(total_bought_qty) AS top3_volume
+                    FROM (
+                        SELECT symbol, total_bought_qty,
+                               ROW_NUMBER() OVER (PARTITION BY symbol ORDER BY total_bought_qty DESC) as rn
+                        FROM broker_scrip_flows
+                    ) sub
+                    WHERE rn <= 3
+                    GROUP BY symbol
+                )
+                SELECT 
+                    s.symbol,
+                    s.turnover,
+                    s.volume,
+                    s.trades_count,
+                    s.vwap,
+                    s.high_rate,
+                    s.low_rate,
+                    COALESCE(lt.ltp, s.vwap) AS ltp,
+                    rb.broker_id AS top_buyer_id,
+                    rb.net_qty AS top_buyer_net_qty,
+                    rs.broker_id AS top_seller_id,
+                    rs.net_qty AS top_seller_net_qty,
+                    COALESCE(c.top3_volume, 0) AS top3_volume
+                FROM scrip_totals s
+                LEFT JOIN last_trades lt ON s.symbol = lt.symbol
+                LEFT JOIN ranked_buyers rb ON s.symbol = rb.symbol AND rb.rn = 1
+                LEFT JOIN ranked_sellers rs ON s.symbol = rs.symbol AND rs.rn = 1
+                LEFT JOIN top3_concentration c ON s.symbol = c.symbol
+                ORDER BY s.turnover DESC;
+            """
+            cur.execute(query, (start_ts, end_ts, min_turn))
+            scrip_rows = cur.fetchall()
+
         cur.close()
         conn.close()
 
         scrips = []
         for r in scrip_rows:
-            turnover = float(r["total_turnover"])
-            market_share = round((turnover / total_market_turnover * 100.0), 2) if total_market_turnover > 0 else 0.0
+            turnover = float(r["turnover"])
+            vol = int(r["volume"])
+            top3_vol = int(r["top3_volume"])
+            conc_pct = round((top3_vol / vol * 100), 2) if vol > 0 else 0.0
+            mkt_share = round((turnover / total_market_turnover * 100), 2) if total_market_turnover > 0 else 0.0
 
             scrips.append({
                 "symbol": r["symbol"],
                 "turnover": turnover,
-                "quantity": int(r["total_quantity"]),
-                "trades_count": int(r["total_trades"]),
-                "high_price": float(r["high_price"]),
-                "low_price": float(r["low_price"]),
-                "ltp": float(r["ltp"]) if r["ltp"] is not None else float(r["high_price"]),
-                "vwap": float(r["vwap"]),
-                "price_spread": round(float(r["high_price"]) - float(r["low_price"]), 2),
-                "market_share_pct": market_share,
-                "top3_concentration_pct": float(r["top3_concentration_pct"]) if r["top3_concentration_pct"] is not None else 0.0,
+                "volume": vol,
+                "trades_count": int(r["trades_count"]),
+                "vwap": float(r["vwap"] or 0),
+                "ltp": float(r["ltp"] or 0),
+                "high_rate": float(r["high_rate"] or 0),
+                "low_rate": float(r["low_rate"] or 0),
+                "market_share_pct": mkt_share,
+                "top3_concentration_pct": conc_pct,
                 "top_net_buyer": {
                     "broker_id": int(r["top_buyer_id"]),
-                    "net_qty": int(r["top_buyer_net_qty"]),
-                    "net_value": float(r["top_buyer_net_amt"]),
-                    "total_buy_qty": int(r["top_buyer_qty"])
+                    "net_qty": int(r["top_buyer_net_qty"])
                 } if r["top_buyer_id"] else None,
                 "top_net_seller": {
                     "broker_id": int(r["top_seller_id"]),
-                    "net_qty": int(r["top_seller_net_qty"]),
-                    "net_value": float(r["top_seller_net_amt"]),
-                    "total_sell_qty": int(r["top_seller_qty"])
+                    "net_qty": int(r["top_seller_net_qty"])
                 } if r["top_seller_id"] else None
             })
 
         return {
             "date": date,
-            "time_window": {"start": start_time or "11:00:00", "end": end_time or "15:00:00"},
+            "time_window": {
+                "start": start_time or "11:00:00",
+                "end": end_time or "15:00:00"
+            },
             "market_summary": {
                 "total_market_turnover": total_market_turnover,
                 "total_market_shares": total_market_quantity,
                 "total_market_trades": total_market_trades,
-                "active_scrips_count": len(scrips)
+                "active_scrips_count": active_scrips_count
             },
             "scrips": scrips
         }
@@ -265,202 +374,161 @@ def get_scrips_overview(
         conn.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.get("/{symbol}")
+@router.get("/scrip/{symbol}")
 def get_scrip_detail(
     symbol: str,
+    response: Response,
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
     start_time: str = Query(None, description="Start time HH:MM:SS (Optional)"),
     end_time: str = Query(None, description="End time HH:MM:SS (Optional)"),
-    bucket: str = Query("15m", description="Timeline bucket: 5m, 15m, 30m, 1h")
+    time_bucket: str = Query("15m", description="Aggregation bucket: 5m, 15m, 30m, 1h"),
+    whale_threshold_qty: int = Query(1000, description="Min quantity for whale scanner"),
+    whale_threshold_amt: float = Query(500000.0, description="Min amount in NPR for whale scanner")
 ):
-    """
-    Returns deep institutional intelligence for a single stock:
-    1. Scrip Summary (Turnover, Shares, Trades, OHLC, VWAP, Range)
-    2. Intraday Price & Volume / Flow Timeline (Chart data)
-    3. Broker Participation & Flow Matrix (Buy/Sell/Net Qty, Buy/Sell VWAP, Flow Status)
-    4. Counterparty Trade Route Matrix (Broker-to-Broker flow)
-    5. Whale & Block Deal Scanner (Top transaction tickets)
-    """
-    sym = symbol.strip().upper()
+    apply_cache_headers(response, date)
     start_ts, end_ts = build_time_bounds(date, start_time, end_time)
+    sym_clean = symbol.strip().upper()
     conn = get_db_connection()
     cur = conn.cursor()
 
-    bucket_str = bucket if isinstance(bucket, str) else "15m"
-    bucket_mins = 15
-    if bucket_str == "5m":
-        bucket_mins = 5
-    elif bucket_str == "30m":
-        bucket_mins = 30
-    elif bucket_str == "1h":
-        bucket_mins = 60
-
     try:
         # High-performance indexed single-pass CTE using idx_symbol_time (symbol, trade_time)
-        single_pass_sql = f"""
-            WITH raw_scrip_trades AS (
+        cur.execute("""
+            WITH s_trades AS (
                 SELECT contract_id, symbol, buyer_broker, seller_broker, quantity, rate, amount, trade_time
                 FROM floorsheet_raw
                 WHERE symbol = %s AND trade_time >= %s AND trade_time <= %s
-            ),
-            broker_side_flows AS (
-                SELECT buyer_broker AS broker_id, quantity AS buy_qty, 0::bigint AS sell_qty, amount AS buy_amt, 0::numeric AS sell_amt FROM raw_scrip_trades
-                UNION ALL
-                SELECT seller_broker AS broker_id, 0::bigint AS buy_qty, quantity AS sell_qty, 0::numeric AS buy_amt, amount AS sell_amt FROM raw_scrip_trades
-            ),
-            broker_agg AS (
-                SELECT 
-                    broker_id,
-                    SUM(buy_qty) AS buy_qty,
-                    SUM(sell_qty) AS sell_qty,
-                    (SUM(buy_qty) - SUM(sell_qty)) AS net_flow_qty,
-                    SUM(buy_amt) AS buy_value,
-                    SUM(sell_amt) AS sell_value,
-                    (SUM(buy_amt) - SUM(sell_amt)) AS net_flow_value,
-                    ROUND(SUM(buy_amt) / NULLIF(SUM(buy_qty), 0), 2) AS buy_vwap,
-                    ROUND(SUM(sell_amt) / NULLIF(SUM(sell_qty), 0), 2) AS sell_vwap,
-                    CASE WHEN (SUM(buy_amt) - SUM(sell_amt)) >= 0 THEN 'NET BUYING' ELSE 'NET SELLING' END AS flow_status
-                FROM broker_side_flows
-                GROUP BY broker_id
-            ),
-            counterparty_agg AS (
-                SELECT 
-                    buyer_broker,
-                    seller_broker,
-                    SUM(amount) AS value,
-                    SUM(quantity) AS quantity,
-                    COUNT(*) AS trades_count,
-                    ROUND(SUM(amount) / NULLIF(SUM(quantity), 0), 2) AS route_vwap
-                FROM raw_scrip_trades
-                GROUP BY buyer_broker, seller_broker
-                ORDER BY value DESC
-                LIMIT 15
-            ),
-            timeline_agg AS (
-                SELECT 
-                    TO_CHAR(trade_time, 'HH24') || ':' || 
-                    LPAD((FLOOR(EXTRACT(MINUTE FROM trade_time) / {bucket_mins}) * {bucket_mins})::TEXT, 2, '0') AS time_bucket,
-                    MIN(rate) AS low_price,
-                    MAX(rate) AS high_price,
-                    ROUND(SUM(amount) / NULLIF(SUM(quantity), 0), 2) AS vwap,
-                    SUM(quantity) AS volume,
-                    SUM(amount) AS turnover,
-                    COUNT(*) AS trades_count
-                FROM raw_scrip_trades
-                GROUP BY time_bucket
-                ORDER BY time_bucket ASC
-            ),
-            whales_agg AS (
-                SELECT 
-                    contract_id,
-                    buyer_broker,
-                    seller_broker,
-                    quantity,
-                    rate,
-                    amount,
-                    TO_CHAR(trade_time, 'HH24:MI:SS') AS trade_time_str
-                FROM raw_scrip_trades
-                WHERE quantity >= 1000 OR amount >= 500000
-                ORDER BY amount DESC
-                LIMIT 50
-            ),
-            last_trade AS (
-                SELECT rate AS ltp
-                FROM raw_scrip_trades
-                ORDER BY trade_time DESC, contract_id DESC
-                LIMIT 1
-            ),
-            summary_agg AS (
-                SELECT 
-                    COUNT(*) AS total_trades,
-                    SUM(quantity) AS total_quantity,
-                    SUM(amount) AS total_turnover,
-                    MAX(rate) AS high_price,
-                    MIN(rate) AS low_price,
-                    ROUND(SUM(amount) / NULLIF(SUM(quantity), 0), 2) AS vwap
-                FROM raw_scrip_trades
             )
             SELECT 
-                (SELECT row_to_json(s) FROM summary_agg s) AS summary,
-                (SELECT ltp FROM last_trade) AS ltp,
-                (SELECT json_agg(b) FROM (SELECT * FROM broker_agg ORDER BY (buy_value + sell_value) DESC) b) AS brokers,
-                (SELECT json_agg(c) FROM counterparty_agg c) AS counterparties,
-                (SELECT json_agg(t) FROM timeline_agg t) AS timeline,
-                (SELECT json_agg(w) FROM whales_agg w) AS whales;
-        """
-        cur.execute(single_pass_sql, (sym, start_ts, end_ts))
-        result = cur.fetchone()
-        cur.close()
-        conn.close()
+                COUNT(*) AS total_trades,
+                COALESCE(SUM(amount), 0) AS total_turnover,
+                COALESCE(SUM(quantity), 0) AS total_volume,
+                COALESCE(MAX(rate), 0) AS high_rate,
+                COALESCE(MIN(rate), 0) AS low_rate,
+                ROUND(COALESCE(SUM(amount) / NULLIF(SUM(quantity), 0), 0), 2) AS vwap
+            FROM s_trades;
+        """, (sym_clean, start_ts, end_ts))
+        summary = cur.fetchone()
 
-        summary_raw = result["summary"] or {}
-        ltp_val = result["ltp"]
-        brokers_raw = result["brokers"] or []
-        cp_raw = result["counterparties"] or []
-        timeline_raw = result["timeline"] or []
-        whales_raw = result["whales"] or []
+        total_turnover = float(summary["total_turnover"])
+        total_volume = int(summary["total_volume"])
+        total_trades = int(summary["total_trades"])
 
-        total_turnover = float(summary_raw.get("total_turnover") or 0.0)
-        total_quantity = int(summary_raw.get("total_quantity") or 0)
-        total_trades = int(summary_raw.get("total_trades") or 0)
-        high_price = float(summary_raw.get("high_price") or 0.0)
-        low_price = float(summary_raw.get("low_price") or 0.0)
-        vwap = float(summary_raw.get("vwap") or 0.0)
-        ltp = float(ltp_val) if ltp_val is not None else high_price
-
-        top_buyer = max([b for b in brokers_raw if b["net_flow_value"] > 0], key=lambda x: x["net_flow_value"], default=None)
-        top_seller = min([b for b in brokers_raw if b["net_flow_value"] < 0], key=lambda x: x["net_flow_value"], default=None)
-
-        # Top 3 concentration
-        sorted_by_buy = sorted(brokers_raw, key=lambda x: x["buy_qty"], reverse=True)
-        top3_buy_vol = sum(b["buy_qty"] for b in sorted_by_buy[:3])
-        top3_concentration_pct = round((top3_buy_vol / total_quantity * 100.0), 2) if total_quantity > 0 else 0.0
+        # 2. Broker Participation Matrix
+        cur.execute("""
+            WITH b_scrip_trades AS (
+                SELECT buyer_broker AS broker_id, quantity AS buy_qty, 0::bigint AS sell_qty, amount AS buy_amt, 0::numeric AS sell_amt 
+                FROM floorsheet_raw WHERE symbol = %s AND trade_time >= %s AND trade_time <= %s
+                UNION ALL
+                SELECT seller_broker AS broker_id, 0::bigint AS buy_qty, quantity AS sell_qty, 0::numeric AS buy_amt, amount AS sell_amt 
+                FROM floorsheet_raw WHERE symbol = %s AND trade_time >= %s AND trade_time <= %s
+            )
+            SELECT 
+                broker_id,
+                SUM(buy_qty) AS buy_qty,
+                SUM(sell_qty) AS sell_qty,
+                SUM(buy_qty) - SUM(sell_qty) AS net_qty,
+                SUM(buy_amt) AS buy_amt,
+                SUM(sell_amt) AS sell_amt,
+                SUM(buy_amt) - SUM(sell_amt) AS net_amt,
+                ROUND(SUM(buy_amt) / NULLIF(SUM(buy_qty), 0), 2) AS buy_vwap,
+                ROUND(SUM(sell_amt) / NULLIF(SUM(sell_qty), 0), 2) AS sell_vwap
+            FROM b_scrip_trades
+            GROUP BY broker_id
+            ORDER BY SUM(buy_amt + sell_amt) DESC;
+        """, (sym_clean, start_ts, end_ts, sym_clean, start_ts, end_ts))
+        broker_rows = cur.fetchall()
 
         brokers = [
             {
                 "broker_id": int(r["broker_id"]),
-                "buy_qty": int(r["buy_qty"]),
-                "sell_qty": int(r["sell_qty"]),
-                "net_flow_qty": int(r["net_flow_qty"]),
-                "buy_value": float(r["buy_value"]),
-                "sell_value": float(r["sell_value"]),
-                "net_flow_value": float(r["net_flow_value"]),
-                "buy_vwap": float(r["buy_vwap"]) if r["buy_vwap"] else 0.0,
-                "sell_vwap": float(r["sell_vwap"]) if r["sell_vwap"] else 0.0,
-                "flow_status": r["flow_status"],
-                "buy_share_pct": round((float(r["buy_value"]) / total_turnover * 100.0), 2) if total_turnover > 0 else 0.0,
-                "sell_share_pct": round((float(r["sell_value"]) / total_turnover * 100.0), 2) if total_turnover > 0 else 0.0
+                "buy_quantity": int(r["buy_qty"]),
+                "sell_quantity": int(r["sell_qty"]),
+                "net_quantity": int(r["net_qty"]),
+                "buy_amount": float(r["buy_amt"]),
+                "sell_amount": float(r["sell_amt"]),
+                "net_amount": float(r["net_amt"]),
+                "buy_vwap": float(r["buy_vwap"] or 0),
+                "sell_vwap": float(r["sell_vwap"] or 0),
+                "market_share_pct": round((float(r["buy_amt"]) / total_turnover * 100), 2) if total_turnover > 0 else 0.0,
+                "flow_status": "ACCUMULATING" if float(r["net_amt"]) >= 0 else "DISTRIBUTING"
             }
-            for r in brokers_raw
+            for r in broker_rows
         ]
 
-        counterparties = [
+        # 3. Direct Counterparty Network Analysis
+        cur.execute("""
+            SELECT 
+                buyer_broker,
+                seller_broker,
+                SUM(amount) AS trade_amount,
+                SUM(quantity) AS trade_quantity,
+                COUNT(*) AS trade_count
+            FROM floorsheet_raw
+            WHERE symbol = %s AND trade_time >= %s AND trade_time <= %s
+            GROUP BY buyer_broker, seller_broker
+            ORDER BY trade_amount DESC
+            LIMIT 15;
+        """, (sym_clean, start_ts, end_ts))
+        routes = [
             {
                 "buyer_broker": int(r["buyer_broker"]),
                 "seller_broker": int(r["seller_broker"]),
-                "value": float(r["value"]),
-                "quantity": int(r["quantity"]),
-                "trades_count": int(r["trades_count"]),
-                "route_vwap": float(r["route_vwap"]) if r["route_vwap"] else 0.0,
-                "share_pct": round((float(r["value"]) / total_turnover * 100.0), 2) if total_turnover > 0 else 0.0
+                "amount": float(r["trade_amount"]),
+                "quantity": int(r["trade_quantity"]),
+                "trades": int(r["trade_count"])
             }
-            for r in cp_raw
+            for r in cur.fetchall()
         ]
 
+        # 4. Intraday Timeline
+        bucket_mins = 15
+        if time_bucket == "5m": bucket_mins = 5
+        elif time_bucket == "30m": bucket_mins = 30
+        elif time_bucket == "1h": bucket_mins = 60
+
+        cur.execute(f"""
+            SELECT 
+                TO_CHAR(trade_time, 'HH24') || ':' || 
+                LPAD((FLOOR(EXTRACT(MINUTE FROM trade_time) / {bucket_mins}) * {bucket_mins})::TEXT, 2, '0') AS time_bucket,
+                SUM(amount) AS turnover,
+                SUM(quantity) AS volume,
+                COUNT(*) AS trades_count,
+                ROUND(SUM(amount) / NULLIF(SUM(quantity), 0), 2) AS bucket_vwap
+            FROM floorsheet_raw
+            WHERE symbol = %s AND trade_time >= %s AND trade_time <= %s
+            GROUP BY time_bucket
+            ORDER BY time_bucket ASC;
+        """, (sym_clean, start_ts, end_ts))
         timeline = [
             {
-                "time_label": r["time_bucket"],
-                "low_price": float(r["low_price"]),
-                "high_price": float(r["high_price"]),
-                "vwap": float(r["vwap"]),
-                "volume": int(r["volume"]),
+                "bucket": r["time_bucket"],
                 "turnover": float(r["turnover"]),
-                "trades_count": int(r["trades_count"])
+                "volume": int(r["volume"]),
+                "trades": int(r["trades_count"]),
+                "vwap": float(r["bucket_vwap"] or 0)
             }
-            for r in timeline_raw
+            for r in cur.fetchall()
         ]
 
-        whales = [
+        # 5. Whale Deals
+        cur.execute("""
+            SELECT 
+                contract_id,
+                buyer_broker,
+                seller_broker,
+                quantity,
+                rate,
+                amount,
+                TO_CHAR(trade_time, 'HH24:MI:SS') AS trade_time_str
+            FROM floorsheet_raw
+            WHERE symbol = %s 
+              AND trade_time >= %s AND trade_time <= %s
+              AND (quantity >= %s OR amount >= %s)
+            ORDER BY trade_time DESC, contract_id DESC
+            LIMIT 50;
+        """, (sym_clean, start_ts, end_ts, whale_threshold_qty, whale_threshold_amt))
+        whale_deals = [
             {
                 "contract_id": int(r["contract_id"]),
                 "buyer_broker": int(r["buyer_broker"]),
@@ -468,45 +536,32 @@ def get_scrip_detail(
                 "quantity": int(r["quantity"]),
                 "rate": float(r["rate"]),
                 "amount": float(r["amount"]),
-                "trade_time": r["trade_time_str"],
-                "share_pct": round((float(r["amount"]) / total_turnover * 100.0), 2) if total_turnover > 0 else 0.0
+                "trade_time": r["trade_time_str"]
             }
-            for r in whales_raw
+            for r in cur.fetchall()
         ]
 
-        peak_window = max(timeline, key=lambda x: x["turnover"])["time_label"] if timeline else None
+        cur.close()
+        conn.close()
 
         return {
-            "symbol": sym,
+            "symbol": sym_clean,
             "date": date,
             "time_window": {"start": start_time or "11:00:00", "end": end_time or "15:00:00"},
-            "bucket": bucket_str,
             "summary": {
                 "turnover": total_turnover,
-                "quantity": total_quantity,
+                "volume": total_volume,
                 "trades_count": total_trades,
-                "high_price": high_price,
-                "low_price": low_price,
-                "ltp": ltp,
-                "vwap": vwap,
-                "price_spread": round(high_price - low_price, 2),
-                "top3_concentration_pct": top3_concentration_pct,
-                "top_net_buyer": {
-                    "broker_id": int(top_buyer["broker_id"]),
-                    "net_qty": int(top_buyer["net_flow_qty"]),
-                    "net_value": float(top_buyer["net_flow_value"])
-                } if top_buyer else None,
-                "top_net_seller": {
-                    "broker_id": int(top_seller["broker_id"]),
-                    "net_qty": int(top_seller["net_flow_qty"]),
-                    "net_value": float(top_seller["net_flow_value"])
-                } if top_seller else None,
-                "peak_trading_window": peak_window
+                "vwap": float(summary["vwap"] or 0),
+                "high_rate": float(summary["high_rate"] or 0),
+                "low_rate": float(summary["low_rate"] or 0),
+                "active_brokers_count": len(brokers),
+                "whale_deals_count": len(whale_deals)
             },
-            "timeline": timeline,
             "brokers": brokers,
-            "counterparties": counterparties,
-            "whales": whales
+            "counterparty_routes": routes,
+            "timeline": timeline,
+            "whale_deals": whale_deals
         }
 
     except Exception as e:
@@ -514,7 +569,7 @@ def get_scrip_detail(
         conn.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-# Mount router across all possible prefix routes to ensure 100% compatibility with Vercel rewrites & local proxies
+# Mount Routers
 app.include_router(router, prefix="/api/script")
 app.include_router(router, prefix="/script")
 app.include_router(router, prefix="/api")

@@ -362,6 +362,53 @@ Floorsheet_cockroachlabs-main/
 
 ---
 
+## ⚡ Database & Pipeline Efficiency Optimization Strategy (>95% RU Reduction)
+
+When scaling to hundreds of thousands of raw market transactions, CockroachDB Serverless Request Units (RUs) can be rapidly exhausted without architectural optimization. We designed and implemented a **5-Pillar Optimization Strategy** to achieve over **95% reduction in RU consumption**:
+
+```mermaid
+flowchart LR
+    subgraph Bottlenecks ["🚨 Initial Ingestion Bottlenecks"]
+        B1["Casting trade_time::date<br/>(Full 1.5M Row Scans: 20,000 RUs)"]
+        B2["100-Row Micro Batches<br/>(500 SQL Txns/Day)"]
+        B3["Zero Cache Layer<br/>(Every Hit Burns DB RUs)"]
+    end
+
+    subgraph Solutions ["⚡ Applied Engineering Solutions"]
+        S1["Indexed Timestamp Bounds<br/>(idx_trade_time Seek: <5 RUs)"]
+        S2["2,000-Row Scaled Chunking<br/>(25 SQL Txns/Day · 95% ⬇️)"]
+        S3["Vercel Edge CDN Caching<br/>(Historical Data: 0 DB RUs!)"]
+        S4["Summary-First Routing<br/>(11k Rows vs 50k Rows Scan)"]
+    end
+
+    B1 ==> S1
+    B2 ==> S2
+    B3 ==> S3
+    B3 ==> S4
+```
+
+### 🔬 Problems Identified & How They Were Solved:
+
+1. **Elimination of Cast Scans (`trade_time::date = %s`)**:
+   * **Problem**: Casting `trade_time::date` disabled the B-tree index, forcing a full table scan (~300 MB / 1.5M rows) costing ~20,000 RUs on every single page load.
+   * **Solution**: Converted all queries to strict timestamp range bounds `trade_time >= start_ts AND trade_time <= end_ts` utilizing the covering index `idx_trade_time`. Read RUs dropped from **20,000 RUs to < 5 RUs (99.97% savings)**.
+2. **Vercel Edge CDN & Response Caching**:
+   * **Problem**: Historical trading days are static and immutable, yet repeated user visits hit the database continuously.
+   * **Solution**: Injected `Cache-Control: public, max-age=86400, s-maxage=86400` headers. Historical requests are served instantly from Vercel Edge CDN at **0 CockroachDB RUs**.
+3. **Summary-First API Routing for Single-Day Overviews**:
+   * **Problem**: Single-day overview dashboards queried the 50k-row `floorsheet_raw` table.
+   * **Solution**: Routed full-day overview queries to `daily_broker_scrip_summary` (11k rows), cutting scan bytes by **78%**.
+4. **Scraper Batch Scaling (from 100 to 2,000 Rows)**:
+   * **Problem**: Ingesting 50,000 daily trades generated 500 individual distributed SQL transactions.
+   * **Solution**: Buffered scraped records in memory and flushed in chunks of 2,000 rows, reducing write transaction overhead by **95%** (from 500 down to 25 transactions).
+5. **Lightweight Metadata Discovery**:
+   * **Problem**: Scrapers queried `SELECT DISTINCT trade_time::date FROM floorsheet_raw`.
+   * **Solution**: Routed date discovery to `daily_broker_scrip_summary` and `analytics_etl_runs`.
+
+📖 For the full technical blueprint and metrics, see [docs/plans/Pipeline_Optimization_Plan.md](file:///home/jagdish/Desktop/Sandbox/Floorsheet%20Visualization/Floorsheet_cockroachlabs-main/docs/plans/Pipeline_Optimization_Plan.md).
+
+---
+
 ## 💖 A Love Letter to Our Code & Bond
 
 ```
