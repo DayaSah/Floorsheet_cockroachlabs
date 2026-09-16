@@ -329,6 +329,14 @@ function renderScripLeaderboard() {
       ? `<span class="badge-dist">#${s.top_net_seller.broker_id} (${formatQty(s.top_net_seller.net_qty)})</span>` 
       : '<span style="color: var(--text-muted); font-size:11px;">-</span>';
 
+    const qty = s.quantity ?? s.volume ?? 0;
+    const ltp = Number(s.ltp ?? s.vwap ?? 0);
+    const vwap = Number(s.vwap ?? 0);
+    const lowP = Number(s.low_price ?? s.low_rate ?? s.vwap ?? 0);
+    const highP = Number(s.high_price ?? s.high_rate ?? s.vwap ?? 0);
+    const mktShare = Number(s.market_share_pct ?? 0);
+    const concPct = Number(s.top3_concentration_pct ?? 0);
+
     return `
       <tr style="cursor: pointer;" onclick="openScripDeepDive('${s.symbol}')">
         <td>
@@ -336,19 +344,19 @@ function renderScripLeaderboard() {
         </td>
         <td class="text-right font-mono" style="font-weight: 700; color: var(--text-bright);">
           ${formatNPR(s.turnover)}
-          <div style="font-size: 10px; color: var(--text-muted); font-weight: 400;">${s.market_share_pct.toFixed(2)}% of market</div>
+          <div style="font-size: 10px; color: var(--text-muted); font-weight: 400;">${mktShare.toFixed(2)}% of market</div>
         </td>
-        <td class="text-right font-mono">${formatQty(s.quantity)}</td>
+        <td class="text-right font-mono">${formatQty(qty)}</td>
         <td class="text-right font-mono">${formatQty(s.trades_count)}</td>
-        <td class="text-right font-mono" style="font-weight: 700; color: var(--accent-blue);">${s.ltp.toFixed(1)}</td>
-        <td class="text-right font-mono" style="color: var(--text-bright);">${s.vwap.toFixed(1)}</td>
+        <td class="text-right font-mono" style="font-weight: 700; color: var(--accent-blue);">${ltp.toFixed(1)}</td>
+        <td class="text-right font-mono" style="color: var(--text-bright);">${vwap.toFixed(1)}</td>
         <td class="text-right font-mono" style="font-size: 11px; color: var(--text-muted);">
-          ${s.low_price.toFixed(1)} - ${s.high_price.toFixed(1)}
+          ${lowP.toFixed(1)} - ${highP.toFixed(1)}
         </td>
         <td>${buyerDisplay}</td>
         <td>${sellerDisplay}</td>
-        <td class="text-right font-mono" style="font-weight: 600; color: ${s.top3_concentration_pct >= 50 ? 'var(--accent-green)' : 'var(--text-bright)'};">
-          ${s.top3_concentration_pct.toFixed(1)}%
+        <td class="text-right font-mono" style="font-weight: 600; color: ${concPct >= 50 ? 'var(--accent-green)' : 'var(--text-bright)'};">
+          ${concPct.toFixed(1)}%
         </td>
         <td class="text-right">
           <button class="btn-broker-action" onclick="event.stopPropagation(); openScripDeepDive('${s.symbol}')">🔍 Deep Dive</button>
@@ -393,17 +401,20 @@ async function fetchScripDeepDive(symbol) {
       bucket: state.activeBucket
     });
 
-    const res = await fetch(`/api/script/${symbol}?${params.toString()}`);
+    let res = await fetch(`/api/script/scrip/${symbol}?${params.toString()}`);
+    if (!res.ok) {
+      res = await fetch(`/api/script/${symbol}?${params.toString()}`);
+    }
     if (!res.ok) throw new Error(`HTTP ${res.status}: Failed to fetch scrip details`);
 
     const data = await res.json();
     state.currentScripData = data;
 
     renderDrawerKPIs(data.summary);
-    renderDrawerChart(data.timeline);
-    renderDrawerBrokers(data.brokers);
-    renderDrawerCounterparties(data.counterparties);
-    renderDrawerWhales(filterWhalesList(data.whales));
+    renderDrawerChart(data.timeline || []);
+    renderDrawerBrokers(data.brokers || []);
+    renderDrawerCounterparties(data.counterparties || data.counterparty_routes || []);
+    renderDrawerWhales(filterWhalesList(data.whales || data.whale_deals || []));
 
     if (drawerLoadingOverlay) {
       drawerLoadingOverlay.classList.add('hidden');
@@ -417,11 +428,20 @@ async function fetchScripDeepDive(symbol) {
 }
 
 function renderDrawerKPIs(s) {
+  if (!s) return;
+  const qty = s.quantity ?? s.volume ?? 0;
+  const ltp = Number(s.ltp ?? s.vwap ?? 0);
+  const vwap = Number(s.vwap ?? 0);
+  const lowP = Number(s.low_price ?? s.low_rate ?? s.vwap ?? 0);
+  const highP = Number(s.high_price ?? s.high_rate ?? s.vwap ?? 0);
+  const spread = Number(s.price_spread ?? (highP - lowP));
+  const conc = Number(s.top3_concentration_pct ?? 0);
+
   sKpiTurnover.textContent = formatNPR(s.turnover);
-  sKpiVolTrades.textContent = `Vol: ${formatCompact(s.quantity)} | Tr: ${formatQty(s.trades_count)}`;
-  sKpiLtpVwap.textContent = `LTP: ${s.ltp.toFixed(1)} | VWAP: ${s.vwap.toFixed(1)}`;
-  sKpiRange.textContent = `${s.low_price.toFixed(1)} - ${s.high_price.toFixed(1)} (Δ ${s.price_spread.toFixed(1)})`;
-  sKpiConcentration.textContent = `${s.top3_concentration_pct.toFixed(1)}%`;
+  sKpiVolTrades.textContent = `Vol: ${formatCompact(qty)} | Tr: ${formatQty(s.trades_count)}`;
+  sKpiLtpVwap.textContent = `LTP: ${ltp.toFixed(1)} | VWAP: ${vwap.toFixed(1)}`;
+  sKpiRange.textContent = `${lowP.toFixed(1)} - ${highP.toFixed(1)} (Δ ${spread.toFixed(1)})`;
+  sKpiConcentration.textContent = `${conc.toFixed(1)}%`;
   sKpiPeak.textContent = s.peak_trading_window || '--:--';
 }
 
@@ -432,11 +452,12 @@ function renderDrawerChart(timeline) {
     state.chartInstance.destroy();
   }
 
-  const labels = timeline.map(t => t.time_label);
-  const vwapData = timeline.map(t => t.vwap);
-  const highData = timeline.map(t => t.high_price);
-  const lowData = timeline.map(t => t.low_price);
-  const volData = timeline.map(t => t.volume);
+  const list = timeline || [];
+  const labels = list.map(t => t.time_label ?? t.bucket ?? '');
+  const vwapData = list.map(t => Number(t.vwap ?? 0));
+  const highData = list.map(t => Number(t.high_price ?? t.vwap ?? 0));
+  const lowData = list.map(t => Number(t.low_price ?? t.vwap ?? 0));
+  const volData = list.map(t => Number(t.volume ?? t.quantity ?? 0));
 
   state.chartInstance = new Chart(ctx, {
     data: {

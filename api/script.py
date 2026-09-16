@@ -53,9 +53,9 @@ def apply_cache_headers(response: Response, date_str: str = None):
     else:
         response.headers["Cache-Control"] = "public, max-age=60, s-maxage=60"
 
-def build_time_bounds(date_str: str, start_time: str = None, end_time: str = None):
-    s_time = start_time.strip() if start_time else "11:00:00"
-    e_time = end_time.strip() if end_time else "15:00:00"
+def build_time_bounds(date_str: str, start_time=None, end_time=None):
+    s_time = start_time.strip() if isinstance(start_time, str) and start_time.strip() else "10:30:00"
+    e_time = end_time.strip() if isinstance(end_time, str) and end_time.strip() else "15:05:00"
     if len(s_time) == 5:
         s_time += ":00"
     if len(e_time) == 5:
@@ -111,7 +111,12 @@ def get_scrips_overview(
     apply_cache_headers(response, date)
     min_turn = float(min_turnover) if isinstance(min_turnover, (int, float, str)) and not hasattr(min_turnover, 'default') else 0.0
     start_ts, end_ts = build_time_bounds(date, start_time, end_time)
-    is_full_day = (start_time is None and end_time is None) or (start_time == "11:00" and end_time == "15:00")
+
+    s_clean = start_time.strip() if isinstance(start_time, str) and start_time.strip() else None
+    e_clean = end_time.strip() if isinstance(end_time, str) and end_time.strip() else None
+    is_full_day = (not s_clean and not e_clean) or \
+                  (s_clean in ["11:00", "11:00:00", "00:00", "00:00:00", "10:30", "10:30:00"] and \
+                   e_clean in ["15:00", "15:00:00", "15:00:59", "15:05:00", "23:59", "23:59:59"])
 
     conn = get_db_connection()
     cur = conn.cursor()
@@ -332,16 +337,23 @@ def get_scrips_overview(
             top3_vol = int(r["top3_volume"])
             conc_pct = round((top3_vol / vol * 100), 2) if vol > 0 else 0.0
             mkt_share = round((turnover / total_market_turnover * 100), 2) if total_market_turnover > 0 else 0.0
+            high_p = float(r["high_rate"] or 0)
+            low_p = float(r["low_rate"] or 0)
+            spread = round(high_p - low_p, 2)
 
             scrips.append({
                 "symbol": r["symbol"],
                 "turnover": turnover,
                 "volume": vol,
+                "quantity": vol,  # Full dual compatibility
                 "trades_count": int(r["trades_count"]),
                 "vwap": float(r["vwap"] or 0),
                 "ltp": float(r["ltp"] or 0),
-                "high_rate": float(r["high_rate"] or 0),
-                "low_rate": float(r["low_rate"] or 0),
+                "high_rate": high_p,
+                "high_price": high_p,  # Full dual compatibility
+                "low_rate": low_p,
+                "low_price": low_p,    # Full dual compatibility
+                "price_spread": spread,
                 "market_share_pct": mkt_share,
                 "top3_concentration_pct": conc_pct,
                 "top_net_buyer": {
@@ -375,6 +387,7 @@ def get_scrips_overview(
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/scrip/{symbol}")
+@router.get("/{symbol}")
 def get_scrip_detail(
     symbol: str,
     response: Response,
@@ -388,6 +401,9 @@ def get_scrip_detail(
     apply_cache_headers(response, date)
     start_ts, end_ts = build_time_bounds(date, start_time, end_time)
     sym_clean = symbol.strip().upper()
+    t_bucket = time_bucket if isinstance(time_bucket, str) and not hasattr(time_bucket, 'default') else "15m"
+    w_qty = int(whale_threshold_qty) if isinstance(whale_threshold_qty, (int, str)) and not hasattr(whale_threshold_qty, 'default') else 1000
+    w_amt = float(whale_threshold_amt) if isinstance(whale_threshold_amt, (int, float, str)) and not hasattr(whale_threshold_amt, 'default') else 500000.0
     conn = get_db_connection()
     cur = conn.cursor()
 
@@ -398,6 +414,9 @@ def get_scrip_detail(
                 SELECT contract_id, symbol, buyer_broker, seller_broker, quantity, rate, amount, trade_time
                 FROM floorsheet_raw
                 WHERE symbol = %s AND trade_time >= %s AND trade_time <= %s
+            ),
+            last_trade AS (
+                SELECT rate AS ltp FROM s_trades ORDER BY trade_time DESC, contract_id DESC LIMIT 1
             )
             SELECT 
                 COUNT(*) AS total_trades,
@@ -405,7 +424,8 @@ def get_scrip_detail(
                 COALESCE(SUM(quantity), 0) AS total_volume,
                 COALESCE(MAX(rate), 0) AS high_rate,
                 COALESCE(MIN(rate), 0) AS low_rate,
-                ROUND(COALESCE(SUM(amount) / NULLIF(SUM(quantity), 0), 0), 2) AS vwap
+                ROUND(COALESCE(SUM(amount) / NULLIF(SUM(quantity), 0), 0), 2) AS vwap,
+                (SELECT ltp FROM last_trade) AS ltp
             FROM s_trades;
         """, (sym_clean, start_ts, end_ts))
         summary = cur.fetchone()
@@ -413,6 +433,10 @@ def get_scrip_detail(
         total_turnover = float(summary["total_turnover"])
         total_volume = int(summary["total_volume"])
         total_trades = int(summary["total_trades"])
+        ltp_val = float(summary["ltp"] or summary["vwap"] or 0)
+        high_p = float(summary["high_rate"] or 0)
+        low_p = float(summary["low_rate"] or 0)
+        spread = round(high_p - low_p, 2)
 
         # 2. Broker Participation Matrix
         cur.execute("""
@@ -439,19 +463,32 @@ def get_scrip_detail(
         """, (sym_clean, start_ts, end_ts, sym_clean, start_ts, end_ts))
         broker_rows = cur.fetchall()
 
+        top3_vol = sum(int(b["buy_qty"]) for b in broker_rows[:3]) if broker_rows else 0
+        top3_conc = round((top3_vol / total_volume * 100), 2) if total_volume > 0 else 0.0
+
         brokers = [
             {
                 "broker_id": int(r["broker_id"]),
+                "buy_qty": int(r["buy_qty"]),
                 "buy_quantity": int(r["buy_qty"]),
+                "sell_qty": int(r["sell_qty"]),
                 "sell_quantity": int(r["sell_qty"]),
+                "net_qty": int(r["net_qty"]),
                 "net_quantity": int(r["net_qty"]),
+                "net_flow_qty": int(r["net_qty"]),
+                "buy_amt": float(r["buy_amt"]),
                 "buy_amount": float(r["buy_amt"]),
+                "buy_value": float(r["buy_amt"]),
+                "sell_amt": float(r["sell_amt"]),
                 "sell_amount": float(r["sell_amt"]),
+                "sell_value": float(r["sell_amt"]),
+                "net_amt": float(r["net_amt"]),
                 "net_amount": float(r["net_amt"]),
+                "net_flow_value": float(r["net_amt"]),
                 "buy_vwap": float(r["buy_vwap"] or 0),
                 "sell_vwap": float(r["sell_vwap"] or 0),
                 "market_share_pct": round((float(r["buy_amt"]) / total_turnover * 100), 2) if total_turnover > 0 else 0.0,
-                "flow_status": "ACCUMULATING" if float(r["net_amt"]) >= 0 else "DISTRIBUTING"
+                "flow_status": "NET BUYING" if float(r["net_amt"]) >= 0 else "NET SELLING"
             }
             for r in broker_rows
         ]
@@ -470,22 +507,25 @@ def get_scrip_detail(
             ORDER BY trade_amount DESC
             LIMIT 15;
         """, (sym_clean, start_ts, end_ts))
-        routes = [
+        counterparties = [
             {
                 "buyer_broker": int(r["buyer_broker"]),
                 "seller_broker": int(r["seller_broker"]),
                 "amount": float(r["trade_amount"]),
+                "value": float(r["trade_amount"]),
                 "quantity": int(r["trade_quantity"]),
-                "trades": int(r["trade_count"])
+                "trades": int(r["trade_count"]),
+                "route_vwap": round(float(r["trade_amount"]) / int(r["trade_quantity"]), 2) if int(r["trade_quantity"]) > 0 else 0.0,
+                "share_pct": round((float(r["trade_amount"]) / total_turnover * 100), 2) if total_turnover > 0 else 0.0
             }
             for r in cur.fetchall()
         ]
 
         # 4. Intraday Timeline
         bucket_mins = 15
-        if time_bucket == "5m": bucket_mins = 5
-        elif time_bucket == "30m": bucket_mins = 30
-        elif time_bucket == "1h": bucket_mins = 60
+        if t_bucket == "5m": bucket_mins = 5
+        elif t_bucket == "30m": bucket_mins = 30
+        elif t_bucket == "1h": bucket_mins = 60
 
         cur.execute(f"""
             SELECT 
@@ -494,7 +534,9 @@ def get_scrip_detail(
                 SUM(amount) AS turnover,
                 SUM(quantity) AS volume,
                 COUNT(*) AS trades_count,
-                ROUND(SUM(amount) / NULLIF(SUM(quantity), 0), 2) AS bucket_vwap
+                ROUND(SUM(amount) / NULLIF(SUM(quantity), 0), 2) AS bucket_vwap,
+                COALESCE(MAX(rate), 0) AS high_price,
+                COALESCE(MIN(rate), 0) AS low_price
             FROM floorsheet_raw
             WHERE symbol = %s AND trade_time >= %s AND trade_time <= %s
             GROUP BY time_bucket
@@ -503,10 +545,13 @@ def get_scrip_detail(
         timeline = [
             {
                 "bucket": r["time_bucket"],
+                "time_label": r["time_bucket"],
                 "turnover": float(r["turnover"]),
                 "volume": int(r["volume"]),
                 "trades": int(r["trades_count"]),
-                "vwap": float(r["bucket_vwap"] or 0)
+                "vwap": float(r["bucket_vwap"] or 0),
+                "high_price": float(r["high_price"] or 0),
+                "low_price": float(r["low_price"] or 0)
             }
             for r in cur.fetchall()
         ]
@@ -527,7 +572,7 @@ def get_scrip_detail(
               AND (quantity >= %s OR amount >= %s)
             ORDER BY trade_time DESC, contract_id DESC
             LIMIT 50;
-        """, (sym_clean, start_ts, end_ts, whale_threshold_qty, whale_threshold_amt))
+        """, (sym_clean, start_ts, end_ts, w_qty, w_amt))
         whale_deals = [
             {
                 "contract_id": int(r["contract_id"]),
@@ -551,16 +596,24 @@ def get_scrip_detail(
             "summary": {
                 "turnover": total_turnover,
                 "volume": total_volume,
+                "quantity": total_volume,
                 "trades_count": total_trades,
                 "vwap": float(summary["vwap"] or 0),
-                "high_rate": float(summary["high_rate"] or 0),
-                "low_rate": float(summary["low_rate"] or 0),
+                "ltp": ltp_val,
+                "high_rate": high_p,
+                "high_price": high_p,
+                "low_rate": low_p,
+                "low_price": low_p,
+                "price_spread": spread,
+                "top3_concentration_pct": top3_conc,
                 "active_brokers_count": len(brokers),
                 "whale_deals_count": len(whale_deals)
             },
             "brokers": brokers,
-            "counterparty_routes": routes,
+            "counterparties": counterparties,
+            "counterparty_routes": counterparties,
             "timeline": timeline,
+            "whales": whale_deals,
             "whale_deals": whale_deals
         }
 
