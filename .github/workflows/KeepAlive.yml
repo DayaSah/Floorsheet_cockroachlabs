@@ -1,0 +1,28 @@
+name: KeepAlive
+
+on:
+  schedule:
+    # Runs at 00:00 UTC on the 2nd and 16th of every month
+    - cron: '0 0 2,16 * *'
+  workflow_dispatch: # Allows manual testing from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update Keepalive.log and Commit
+        run: |
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          DATE_STR=$(date -u +"%Y-%m-%d")
+          echo "$TIMESTAMP" >> Keepalive.log
+          git config --global user.name "Daya Sah"
+          git config --global user.email "daya123ab@gmail.com"
+          git add Keepalive.log
+          git commit -m "Hello World On $DATE_STR"
+          git push
